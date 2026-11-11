@@ -5,7 +5,7 @@ import XCTest
 
 final class KeywordMuteTests: XCTestCase {
     @MainActor
-    func testRefreshOmitsMutedArticlesFromNotificationsAndKeepsThemAvailable() async throws {
+    func testAgentRefreshReportsMutedArticlesWithoutNotifying() async throws {
         let feed = Feed(id: UUID(), title: "Fixture", feedURL: URL(string: "https://example.test/feed")!)
         let store = AppStore(
             testDatabase: AppDatabase(
@@ -24,12 +24,15 @@ final class KeywordMuteTests: XCTestCase {
         )
         let scope = KeywordMuteScope.feed(feed.id)
         try await store.saveKeywordMuteRule(KeywordMuteRule(keywords: ["sponsored"]), for: scope)
-        let outcome = await store.refresh()
+        let detail = await store.performAgentRefresh(.init(scope: "all", feedCount: 1))
+        let outcome = store.latestRefreshOutcome
         XCTAssertEqual(outcome?.newUnreadEntries.map(\.title), ["News"])
+        XCTAssertEqual(detail.updatedFeedCount, 1)
         XCTAssertEqual(store.sidebarCounts.allUnread, 1)
         let hidden = try await store.keywordMuteArticles(in: scope, limit: 10)
         XCTAssertEqual(hidden.map(\.title), ["Sponsored"])
         XCTAssertEqual(hidden.first?.isRead, false)
+        XCTAssertEqual(Set(detail.newArticleIDs), Set((outcome?.newUnreadEntries.map(\.id) ?? []) + hidden.map(\.id)))
     }
 
     func testRulesFilterBeforePagingAndKeepHiddenArticlesUnread() throws {
