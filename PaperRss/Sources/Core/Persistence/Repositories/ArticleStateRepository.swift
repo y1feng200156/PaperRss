@@ -140,6 +140,7 @@ public final class ArticleStateRepository: Sendable {
         feedIDs: Set<String>? = nil,
         folderName: String? = nil,
         startOfDayTimestamp: Double? = nil,
+        excludingMuted: Bool = false,
         in db: Database
     ) throws {
         let now = Date().timeIntervalSince1970
@@ -180,6 +181,10 @@ public final class ArticleStateRepository: Sendable {
         if let startOfDayTimestamp {
             whereClauses.append("(art.published_at >= :start_of_day OR (art.published_at IS NULL AND i.created_at >= :start_of_day))")
             arguments["start_of_day"] = startOfDayTimestamp
+        }
+
+        if excludingMuted, try KeywordMuteRule.hasEnabledRules(in: db) {
+            whereClauses.append("NOT \(KeywordMuteRule.isMutedSQL(articleAlias: "art"))")
         }
 
         let whereSql = whereClauses.joined(separator: " AND ")

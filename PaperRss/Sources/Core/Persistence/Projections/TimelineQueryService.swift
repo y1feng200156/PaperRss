@@ -42,10 +42,7 @@ public struct SidebarCounts: Sendable, Equatable {
     }
 
     public func unreadCount(folder: String, accountID: String = "local-default") -> Int {
-        if let count = unreadByFolder["\(accountID)::\(folder)"] {
-            return count
-        }
-        return unreadByFolder[folder] ?? 0
+        unreadByFolder["\(accountID)::\(folder)"] ?? (accountID == "local-default" ? unreadByFolder[folder] : nil) ?? 0
     }
 }
 
@@ -65,10 +62,11 @@ public final class TimelineQueryService: Sendable {
 
     public func fetchSidebarCounts(
         accountID: String? = nil,
-        startOfDayTimestamp: Double
+        startOfDayTimestamp: Double,
+        includeMuted: Bool = false
     ) throws -> SidebarCounts {
         try database.read { db in
-            try fetchSidebarCounts(accountID: accountID, startOfDayTimestamp: startOfDayTimestamp, in: db)
+            try fetchSidebarCounts(accountID: accountID, startOfDayTimestamp: startOfDayTimestamp, includeMuted: includeMuted, in: db)
         }
     }
 
@@ -85,9 +83,13 @@ public final class TimelineQueryService: Sendable {
     public func fetchSidebarCounts(
         accountID: String? = nil,
         startOfDayTimestamp: Double,
+        includeMuted: Bool = false,
         in db: Database
     ) throws -> SidebarCounts {
         let accountWhere = accountID != nil ? "AND i.account_id = :account_id" : "AND (acc.is_enabled = 1 OR acc.id IS NULL)"
+        let filtersMuted = !includeMuted ? try KeywordMuteRule.hasEnabledRules(in: db) : false
+        let muteJoin = filtersMuted ? "INNER JOIN articles a ON a.item_id = i.id" : ""
+        let muteWhere = filtersMuted ? "AND NOT \(KeywordMuteRule.isMutedSQL())" : ""
         var arguments: [String: (any DatabaseValueConvertible)?] = [:]
         if let accountID {
             arguments["account_id"] = accountID
@@ -100,7 +102,8 @@ public final class TimelineQueryService: Sendable {
         INNER JOIN article_states s ON s.item_id = i.id
         INNER JOIN feeds f ON f.id = i.feed_id
         LEFT JOIN accounts acc ON acc.id = i.account_id
-        WHERE f.is_deleted = 0 AND s.is_read = 0 \(accountWhere);
+        \(muteJoin)
+        WHERE f.is_deleted = 0 AND s.is_read = 0 \(accountWhere) \(muteWhere);
         """
         let allUnread = try Int.fetchOne(db, sql: allUnreadSql, arguments: StatementArguments(arguments)) ?? 0
 
@@ -114,7 +117,7 @@ public final class TimelineQueryService: Sendable {
         INNER JOIN articles a ON a.item_id = i.id
         INNER JOIN feeds f ON f.id = i.feed_id
         LEFT JOIN accounts acc ON acc.id = i.account_id
-        WHERE f.is_deleted = 0 AND s.is_read = 0 \(accountWhere)
+        WHERE f.is_deleted = 0 AND s.is_read = 0 \(accountWhere) \(muteWhere)
           AND (a.published_at >= :start_of_day OR (a.published_at IS NULL AND i.created_at >= :start_of_day));
         """
         let todayUnread = try Int.fetchOne(
@@ -130,7 +133,8 @@ public final class TimelineQueryService: Sendable {
         INNER JOIN article_states s ON s.item_id = i.id
         INNER JOIN feeds f ON f.id = i.feed_id
         LEFT JOIN accounts acc ON acc.id = i.account_id
-        WHERE f.is_deleted = 0 AND s.is_starred = 1 \(accountWhere);
+        \(muteJoin)
+        WHERE f.is_deleted = 0 AND s.is_starred = 1 \(accountWhere) \(muteWhere);
         """
         let starred = try Int.fetchOne(db, sql: starredSql, arguments: StatementArguments(arguments)) ?? 0
 
@@ -141,7 +145,8 @@ public final class TimelineQueryService: Sendable {
         INNER JOIN article_states s ON s.item_id = i.id
         INNER JOIN feeds f ON f.id = i.feed_id
         LEFT JOIN accounts acc ON acc.id = i.account_id
-        WHERE f.is_deleted = 0 AND s.is_read = 0 \(accountWhere)
+        \(muteJoin)
+        WHERE f.is_deleted = 0 AND s.is_read = 0 \(accountWhere) \(muteWhere)
         GROUP BY i.feed_id;
         """
         let feedRows = try Row.fetchAll(db, sql: feedUnreadSql, arguments: StatementArguments(arguments))
@@ -162,7 +167,8 @@ public final class TimelineQueryService: Sendable {
         INNER JOIN feed_folders ff ON ff.feed_id = f.id
         INNER JOIN folders fo ON fo.id = ff.folder_id
         LEFT JOIN accounts acc ON acc.id = i.account_id
-        WHERE f.is_deleted = 0 AND fo.is_deleted = 0 AND s.is_read = 0 \(accountWhere)
+        \(muteJoin)
+        WHERE f.is_deleted = 0 AND fo.is_deleted = 0 AND s.is_read = 0 \(accountWhere) \(muteWhere)
         GROUP BY fo.account_id, fo.name;
         """
         let folderRows = try Row.fetchAll(db, sql: folderUnreadSql, arguments: StatementArguments(arguments))
@@ -172,7 +178,7 @@ public final class TimelineQueryService: Sendable {
             let folderName: String = row["folder_name"]
             let count: Int = row["unread_count"]
             unreadByFolder["\(accID)::\(folderName)"] = count
-            unreadByFolder[folderName] = count
+            if accID == "local-default" { unreadByFolder[folderName] = count }
         }
 
         return SidebarCounts(
@@ -186,16 +192,24 @@ public final class TimelineQueryService: Sendable {
 
     // MARK: - Timeline List Items (Bounded Projection Query)
 
+    enum KeywordFilter {
+        case visible
+        case hidden
+        case matching(KeywordMuteRule)
+        case all
+    }
+
     public func fetchListItems(
         accountID: String? = nil,
         scope: TimelineScope,
         unreadOnly: Bool = false,
         retainingIDs: Set<String> = [],
         limit: Int? = nil,
-        offset: Int = 0
+        offset: Int = 0,
+        includeMuted: Bool = false
     ) throws -> [EntryListItem] {
         try database.read { db in
-            try fetchListItems(accountID: accountID, scope: scope, unreadOnly: unreadOnly, retainingIDs: retainingIDs, limit: limit, offset: offset, in: db)
+            try fetchListItems(accountID: accountID, scope: scope, unreadOnly: unreadOnly, retainingIDs: retainingIDs, limit: limit, offset: offset, keywordFilter: includeMuted ? .all : .visible, in: db)
         }
     }
 
@@ -206,20 +220,22 @@ public final class TimelineQueryService: Sendable {
         unreadOnly: Bool = false,
         retainingIDs: Set<String> = [],
         limit: Int? = nil,
-        offset: Int = 0
+        offset: Int = 0,
+        includeMuted: Bool = false
     ) async throws -> [EntryListItem] {
         try await database.readAsync { db in
-            try self.fetchListItems(accountID: accountID, scope: scope, unreadOnly: unreadOnly, retainingIDs: retainingIDs, limit: limit, offset: offset, in: db)
+            try self.fetchListItems(accountID: accountID, scope: scope, unreadOnly: unreadOnly, retainingIDs: retainingIDs, limit: limit, offset: offset, keywordFilter: includeMuted ? .all : .visible, in: db)
         }
     }
 
-    public func fetchListItems(
+    func fetchListItems(
         accountID: String? = nil,
         scope: TimelineScope,
         unreadOnly: Bool = false,
         retainingIDs: Set<String> = [],
         limit: Int? = nil,
         offset: Int = 0,
+        keywordFilter: KeywordFilter = .visible,
         in db: Database
     ) throws -> [EntryListItem] {
         var whereClauses = ["f.is_deleted = 0"]
@@ -298,12 +314,35 @@ public final class TimelineQueryService: Sendable {
                 : "(s.is_read = 0 OR i.id IN (\(placeholders)))")
         }
 
+        var visibleClause = ""
+        switch keywordFilter {
+        case .visible:
+            if try KeywordMuteRule.hasEnabledRules(in: db) {
+                let predicate = "NOT \(KeywordMuteRule.isMutedSQL())"
+                whereClauses.append(predicate)
+                visibleClause = "AND \(predicate)"
+            }
+        case .hidden:
+            guard try KeywordMuteRule.hasEnabledRules(in: db) else { return [] }
+            whereClauses.append(KeywordMuteRule.isMutedSQL())
+        case .matching(let rule):
+            guard !rule.keywords.isEmpty else { return [] }
+            arguments["mute_keywords"] = try JSONEncoder().encode(rule.keywords)
+            whereClauses.append("keyword_mute_matches(a.title, a.summary, :mute_keywords)")
+        case .all:
+            break
+        }
+
         // The normal first page of one feed can use the existing published-date
         // index to choose IDs before building row projections. COALESCE in the
         // general ORDER BY prevents that index from serving the LIMIT. If this
         // feed has an undated article, keep the general query: its created_at
         // must still interleave with published dates exactly as before.
-        if accountID == nil,
+        let canUseFeedIndex = switch keywordFilter {
+        case .visible, .all: true
+        case .hidden, .matching: false
+        }
+        if canUseFeedIndex, accountID == nil,
            case let .feed(feedID) = scope,
            !unreadOnly, retainingIDs.isEmpty,
            let limit, (1...200).contains(limit), offset == 0 {
@@ -322,7 +361,7 @@ public final class TimelineQueryService: Sendable {
                     INNER JOIN feeds f ON f.id = i.feed_id
                     LEFT JOIN accounts acc ON acc.id = i.account_id
                     WHERE i.feed_id = ? AND f.is_deleted = 0
-                      AND (acc.is_enabled = 1 OR acc.id IS NULL)
+                      AND (acc.is_enabled = 1 OR acc.id IS NULL) \(visibleClause)
                     ORDER BY a.published_at DESC, i.id DESC
                     LIMIT \(limit)
                     """, arguments: [feedID])
@@ -571,6 +610,10 @@ public final class TimelineQueryService: Sendable {
             whereClauses.append(retainingIDs.isEmpty
                 ? "s.is_read = 0"
                 : "(s.is_read = 0 OR i.id IN (\(placeholders)))")
+        }
+
+        if try KeywordMuteRule.hasEnabledRules(in: db) {
+            whereClauses.append("NOT \(KeywordMuteRule.isMutedSQL())")
         }
 
         arguments["cur_id"] = currentItemID

@@ -106,6 +106,7 @@ public final class AppStore: ObservableObject {
     @Published public private(set) var unreadEntryListItems: [EntryListItem] = []
     @Published public private(set) var starredEntryListItems: [EntryListItem] = []
     @Published public private(set) var timelineRevision: UInt64 = 0
+    private var keywordMuteRevision: UInt64 = 0
     @Published public private(set) var articleRefreshSignal: ArticleRefreshSignal?
     @Published public private(set) var activeRefetchEntryIDs: Set<String> = []
     @Published public var llmConfiguration: LLMConfiguration = .default
@@ -741,6 +742,7 @@ public final class AppStore: ObservableObject {
     /// MainActor 只负责最后一次性提交已完成的值，避免刷新尾部再次阻塞三栏。
     private func reloadStateAsync() async {
         let recoveryRevision = accountRecoveryProjectionRevision
+        let muteRevision = keywordMuteRevision
         let sidebarGeneration = beginSidebarCountsRefresh()
         let calendar = Calendar.current
         let startOfDay = calendar.startOfDay(for: Date()).timeIntervalSince1970
@@ -809,10 +811,12 @@ public final class AppStore: ObservableObject {
         if sidebarCountsRefreshGeneration == sidebarGeneration {
             sidebarCounts = resolvedSidebarCounts ?? SidebarCounts()
         }
-        entryListItems = resolvedAllItems ?? []
-        todayEntryListItems = resolvedTodayItems ?? []
-        unreadEntryListItems = resolvedUnreadItems ?? []
-        starredEntryListItems = resolvedStarredItems ?? []
+        if muteRevision == keywordMuteRevision {
+            entryListItems = resolvedAllItems ?? []
+            todayEntryListItems = resolvedTodayItems ?? []
+            unreadEntryListItems = resolvedUnreadItems ?? []
+            starredEntryListItems = resolvedStarredItems ?? []
+        }
         cachedEntryLookup.removeAll(keepingCapacity: true)
         accountSyncStates = syncStates
 
@@ -1061,6 +1065,35 @@ public final class AppStore: ObservableObject {
             if let count = try? await previewBackfill.prepare(entryIDs: ids), count > 0 { didChange = true }
         }
         if didChange { timelineRevision &+= 1 }
+    }
+
+    public func keywordMuteRule(for scope: KeywordMuteScope) async throws -> KeywordMuteRule {
+        try await libraryDatabase.readAsync { db in try scope.fetchRule(in: db) }
+    }
+
+    public func saveKeywordMuteRule(_ rule: KeywordMuteRule, for scope: KeywordMuteScope) async throws {
+        try await libraryDatabase.writeAsync { db in try scope.save(rule, in: db) }
+        keywordMuteRevision &+= 1
+        await reloadStateAsync()
+    }
+
+    public func keywordMuteArticles(
+        in scope: KeywordMuteScope,
+        previewRule: KeywordMuteRule? = nil,
+        limit: Int,
+        offset: Int = 0
+    ) async throws -> [EntryListItem] {
+        let query = localProvider.timelineQueryService
+        return try await libraryDatabase.readAsync { db in
+            try query.fetchListItems(
+                scope: scope.timelineScope, limit: limit, offset: offset,
+                keywordFilter: previewRule.map { .matching($0) } ?? .hidden, in: db
+            )
+        }
+    }
+
+    public func isKeywordMuted(entryID: String) -> Bool {
+        (try? libraryDatabase.read { db in try KeywordMuteRule.mutedIDs([entryID], in: db).contains(entryID) }) ?? false
     }
 
     public func fetchTimelinePage(
@@ -2203,7 +2236,7 @@ public final class AppStore: ObservableObject {
 
         var failures: [String] = []
         var updatedFeeds = 0
-        var newUnreadEntries: [Entry] = []
+        var newUnreadIDs: [String] = []
         var shouldReloadLocalSnapshot = false
 
         // 1. 本地源抓取（指定局部源或全局本地源）
@@ -2254,7 +2287,7 @@ public final class AppStore: ObservableObject {
                     do {
                         let outcome = try await provider.applyRefreshResultAsync(taskResult)
                         if outcome.updated { updatedFeeds += 1 }
-                        newUnreadEntries.append(contentsOf: outcome.newUnreadEntries)
+                        newUnreadIDs.append(contentsOf: outcome.newUnreadEntries.map(\.id))
                     } catch {
                         failures.append("\(taskResult.oldTitle)：\(error.localizedDescription)")
                     }
@@ -2300,7 +2333,12 @@ public final class AppStore: ObservableObject {
 
         // 2. 全局刷新时，仅协调刷新所有远端账号（排除 local-default，杜绝本地重复刷新）
         if feedIDs == nil {
-            let initialUnreadIDs = Set(self.unreadEntryListItems.map(\.id))
+            let query = localProvider.timelineQueryService
+            // 静音设置可能在同步时变化，使用未过滤的快照判断哪些文章是本轮新到的。
+            let initialUnreads = (try? await query.fetchListItemsAsync(
+                scope: .unread, limit: Self.defaultTimelineLimit, includeMuted: true
+            )) ?? []
+            let initialUnreadIDs = Set(initialUnreads.map(\.id))
 
             let syncResults = await syncCoordinator.refreshRemoteAccounts(reason: origin == .manual ? .manual : .scheduled)
 
@@ -2319,13 +2357,10 @@ public final class AppStore: ObservableObject {
             await reloadStateAsync()
 
             // 提取远端同步产生的新未读文章
-            let currentUnreads = self.unreadEntryListItems.map(\.id)
-            let newlyArrivedIDs = currentUnreads.filter { !initialUnreadIDs.contains($0) }
-            for id in newlyArrivedIDs {
-                if let entry = entry(id: id) {
-                    newUnreadEntries.append(entry)
-                }
-            }
+            let currentUnreads = (try? await query.fetchListItemsAsync(
+                scope: .unread, limit: Self.defaultTimelineLimit, includeMuted: true
+            )) ?? []
+            newUnreadIDs.append(contentsOf: currentUnreads.map(\.id).filter { !initialUnreadIDs.contains($0) })
         } else {
             // 局部刷新没有远端账号同步，需要在所有异步 merge 完成后只重载一次。
             // 如果本轮唯一的 Feed 已在刷新期间删除，删除动作本身已经同步了 UI；
@@ -2335,18 +2370,26 @@ public final class AppStore: ObservableObject {
             }
         }
 
-        let finishedAt = Date.now
-        var reportedEntryIDs: Set<String> = []
-        let finalNewUnreads = newUnreadEntries.compactMap { candidate -> Entry? in
-            guard reportedEntryIDs.insert(candidate.id).inserted,
-                  let current = try? localProvider.fetchEntry(id: candidate.id) ?? self.entry(id: candidate.id),
-                  !current.isRead else { return nil }
-            return current
+        let finalNewUnreads: [Entry]
+        if newUnreadIDs.isEmpty {
+            finalNewUnreads = []
+        } else {
+            let repository = localProvider.articleRepository
+            finalNewUnreads = (try? await libraryDatabase.readAsync { [newUnreadIDs] db in
+                let mutedIDs = try KeywordMuteRule.mutedIDs(newUnreadIDs, in: db)
+                var reportedIDs: Set<String> = []
+                return newUnreadIDs.compactMap { id -> Entry? in
+                    guard !mutedIDs.contains(id), reportedIDs.insert(id).inserted,
+                          let entry = try? repository.fetchEntry(id: id, in: db), !entry.isRead else { return nil }
+                    return entry
+                }
+            }) ?? []
         }
 
+        let finishedAt = Date.now
         let outcome = FeedRefreshOutcome(
             origin: origin,
-            newUnreadEntries: finalNewUnreads,
+            newUnreadEntries: finalNewUnreads.filter { !invalidatedRefreshFeedIDs.contains($0.feedID) },
             updatedFeedCount: updatedFeeds,
             failedFeedCount: failures.count,
             finishedAt: finishedAt
@@ -2602,6 +2645,7 @@ public final class AppStore: ObservableObject {
                     feedIDs: feedIDs.map { Set($0.map(\.uuidString)) },
                     folderName: targetFolder,
                     startOfDayTimestamp: actualStartOfDay,
+                    excludingMuted: true,
                     in: db
                 )
             }

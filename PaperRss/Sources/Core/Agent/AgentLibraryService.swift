@@ -306,7 +306,7 @@ public actor AgentLibraryService: AgentBridge {
         let feeds = try database.read { db in
             try provider.feedRepository.fetchAllFeedModels(accountID: account, in: db)
         }.sorted { $0.id.uuidString < $1.id.uuidString }
-        let counts = try provider.timelineQueryService.fetchSidebarCounts(accountID: account, startOfDayTimestamp: 0)
+        let counts = try provider.timelineQueryService.fetchSidebarCounts(accountID: account, startOfDayTimestamp: 0, includeMuted: true)
         let page = Array(feeds.dropFirst(start).prefix(limit))
         let titles = page.map { String($0.title.plainText.unicodeScalars.prefix(500)) }
         try charge(titles.reduce(0) { $0 + $1.unicodeScalars.count })
@@ -384,7 +384,7 @@ public actor AgentLibraryService: AgentBridge {
         var position = try offset(a)
         // Reuse the existing bounded timeline projection. Cap work per call and continue scanning via cursor.
         let rows = try provider.timelineQueryService.fetchListItems(accountID: account,
-            scope: scope == "unread" ? .unread : scope == "starred" ? .starred : .all, limit: 500, offset: position)
+            scope: scope == "unread" ? .unread : scope == "starred" ? .starred : .all, limit: 500, offset: position, includeMuted: true)
         var result: [AgentArticleMetadata] = []
         for row in rows {
             position += 1

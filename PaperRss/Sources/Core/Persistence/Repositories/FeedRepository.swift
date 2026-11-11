@@ -306,9 +306,6 @@ public final class FeedRepository: Sendable {
             arguments: [oldFolderID]
         )
 
-        _ = try FeedFolderRecord.filter(Column("folder_id") == oldFolderID).deleteAll(db)
-        _ = try FolderRecord.filter(Column("id") == oldFolderID).deleteAll(db)
-
         let newRecord = FolderRecord(
             id: newFolderID,
             accountID: accountID,
@@ -319,6 +316,11 @@ public final class FeedRepository: Sendable {
             updatedAt: Date().timeIntervalSince1970
         )
         try newRecord.save(db)
+        try db.execute(sql: """
+            UPDATE OR IGNORE keyword_mute_rules SET folder_id = ? WHERE folder_id = ?
+            """, arguments: [newFolderID, oldFolderID])
+        _ = try FeedFolderRecord.filter(Column("folder_id") == oldFolderID).deleteAll(db)
+        _ = try FolderRecord.filter(Column("id") == oldFolderID).deleteAll(db)
 
         for feedID in feedIDs {
             let link = FeedFolderRecord(feedID: feedID, folderID: newFolderID)

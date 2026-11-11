@@ -771,6 +771,18 @@ public enum DatabaseMigrations {
             }
         }
 
+        migrator.registerMigration("v25-keyword-mute-rules") { db in
+            try db.execute(sql: """
+                CREATE TABLE keyword_mute_rules (
+                    feed_id TEXT UNIQUE REFERENCES feeds(id) ON DELETE CASCADE,
+                    folder_id TEXT UNIQUE REFERENCES folders(id) ON DELETE CASCADE,
+                    keywords BLOB NOT NULL,
+                    is_enabled INTEGER NOT NULL CHECK (is_enabled IN (0, 1)),
+                    CHECK ((feed_id IS NULL) != (folder_id IS NULL))
+                );
+                """)
+        }
+
         return migrator
     }
 

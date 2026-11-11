@@ -271,6 +271,9 @@ struct RootView: View {
     @State private var initialFolderAccountID: String? = nil
     @State private var renamingFolder: FolderIdentifiable? = nil
     @State private var renamingFeed: Feed? = nil
+    #if os(macOS)
+    @State private var keywordMuteRequest: KeywordMuteSheet.Request?
+    #endif
     @State private var showsSettings = false
     @State private var showsImporter = false
     @State private var showsExporter = false
@@ -382,6 +385,21 @@ struct RootView: View {
             .sheet(item: $renamingFeed) { feed in
                 RenameFeedSheet(store: store, feed: feed)
             }
+            #if os(macOS)
+            .sheet(item: $keywordMuteRequest) { request in
+                KeywordMuteSheet(store: store, request: request, onSave: {
+                    if let selectedEntryID, store.isKeywordMuted(entryID: selectedEntryID) {
+                        self.selectedEntryID = nil
+                        retainedEntryListIDs.removeAll()
+                    }
+                }, onOpenArticle: { article in
+                    sidebarSelection.wrappedValue = .feed(article.feedID)
+                    selectedFeedIDs = [article.feedID]
+                    isTimelineBrowsing = false
+                    selectedEntryID = article.id
+                })
+            }
+            #endif
             #if os(iOS)
             .sheet(isPresented: $showsSettings) { NavigationStack { SettingsView(store: store).navigationTitle(I18N.localized("设置")) } }
             #endif
@@ -469,6 +487,7 @@ struct RootView: View {
                 onClearFeedFilters: { clearFeedFilters(in: $0) },
                 onClearArticleFilters: { clearArticleFilters(in: $0) },
                 onDeleteSelection: { selectedEntryID = nil },
+                onKeywordMute: { keywordMuteRequest = $0 },
                 updateCoordinator: updateCoordinator
             )
             .ignoresSafeArea(),
@@ -1413,6 +1432,7 @@ private struct SidebarView: View {
     /// an empty capsule placeholder.
     var onDeleteSelection: () -> Void
     #if os(macOS)
+    var onKeywordMute: (KeywordMuteSheet.Request) -> Void
     @ObservedObject var updateCoordinator: UpdateCoordinator
     #endif
     @AppStorage("sidebar_collapsed_accounts_raw") private var collapsedAccountsRaw: String = ""
@@ -1955,6 +1975,22 @@ private struct SidebarView: View {
     }
 
     @ViewBuilder
+    private func keywordMuteMenu(for scope: KeywordMuteScope, title: String) -> some View {
+        #if os(macOS)
+        Button {
+            onKeywordMute(.init(scope: scope, title: title, showsHiddenArticles: false))
+        } label: {
+            Label(I18N.localized("关键词静音…"), systemImage: "speaker.slash")
+        }
+        Button {
+            onKeywordMute(.init(scope: scope, title: title, showsHiddenArticles: true))
+        } label: {
+            Label(I18N.localized("查看已隐藏文章"), systemImage: "eye")
+        }
+        #endif
+    }
+
+    @ViewBuilder
     private func remoteFolderRow(_ folder: String, accountID: String) -> some View {
         let count = store.unreadCount(folder: folder, accountID: accountID)
         let key = "\(accountID)::\(folder)"
@@ -1993,6 +2029,7 @@ private struct SidebarView: View {
                 }
 
                 unreadFilterClearMenuItems(for: .folder(accountID: accountID, folderName: folder), includesFeedFilters: false)
+                keywordMuteMenu(for: .folder(accountID: accountID, name: folder), title: folder)
 
                 Divider()
 
@@ -2070,6 +2107,7 @@ private struct SidebarView: View {
                     }
 
                     unreadFilterClearMenuItems(for: .feed(feed.id), includesFeedFilters: false)
+                    keywordMuteMenu(for: .feed(feed.id), title: feed.title)
 
                     Button {
                         copyToClipboard(feed.feedURL.absoluteString)
@@ -2216,6 +2254,7 @@ private struct SidebarView: View {
                 }
 
                 unreadFilterClearMenuItems(for: .folder(accountID: accountID, folderName: folder), includesFeedFilters: false)
+                keywordMuteMenu(for: .folder(accountID: accountID, name: folder), title: folder)
 
                 Button {
                     renamingFolder = FolderIdentifiable(name: folder, accountID: accountID)
@@ -2350,6 +2389,7 @@ private struct SidebarView: View {
                     }
 
                     unreadFilterClearMenuItems(for: .feed(feed.id), includesFeedFilters: false)
+                    keywordMuteMenu(for: .feed(feed.id), title: feed.title)
 
                     TranslationFeedListMenu(store: store, feedID: feed.id, accountID: "local-default")
                     Divider()

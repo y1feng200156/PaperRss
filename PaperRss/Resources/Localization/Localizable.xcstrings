@@ -1,6 +1,146 @@
 {
   "sourceLanguage" : "zh-Hans",
   "strings" : {
+  "关键词静音": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Keyword Muting"
+        }
+      }
+    }
+  },
+  "关键词静音…": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Keyword Muting…"
+        }
+      }
+    }
+  },
+  "查看已隐藏文章": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "View Hidden Articles"
+        }
+      }
+    }
+  },
+  "无法载入关键词静音规则。": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Couldn’t load the keyword mute rule."
+        }
+      }
+    }
+  },
+  "每行填写一个关键词。标题或订阅摘要包含任意关键词时，文章将被隐藏。": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Enter one keyword per line. Articles are hidden when their title or feed summary contains any of these keywords."
+        }
+      }
+    }
+  },
+  "静音关键词": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Muted Keywords"
+        }
+      }
+    }
+  },
+  "启用关键词静音": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Enable Keyword Muting"
+        }
+      }
+    }
+  },
+  "匹配预览": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Match Preview"
+        }
+      }
+    }
+  },
+  "输入关键词后可预览匹配的文章。": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Enter keywords to preview matching articles."
+        }
+      }
+    }
+  },
+  "无法载入文章。": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Couldn’t load articles."
+        }
+      }
+    }
+  },
+  "没有匹配的文章。": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "No matching articles."
+        }
+      }
+    }
+  },
+  "无法保存关键词静音规则。": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Couldn’t save the keyword mute rule."
+        }
+      }
+    }
+  },
+  "这个范围没有已隐藏的文章。": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "There are no hidden articles here."
+        }
+      }
+    }
+  },
+  "加载更多": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Load More"
+        }
+      }
+    }
+  },
   "全文已就绪": {
     "localizations": {
       "en": {

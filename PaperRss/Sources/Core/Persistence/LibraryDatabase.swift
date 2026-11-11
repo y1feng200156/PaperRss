@@ -57,6 +57,10 @@ public final class LibraryDatabase: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let path = databaseURL.path
+        var configuration = configuration
+        configuration.prepareDatabase { db in
+            db.add(function: KeywordMuteRule.matches)
+        }
         let pool = try DatabasePool(path: path, configuration: configuration)
         try migrator.migrate(pool)
 

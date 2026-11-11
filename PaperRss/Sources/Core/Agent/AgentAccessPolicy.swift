@@ -189,7 +189,7 @@ public enum AgentAccountSnapshots {
         return try records.map { account in
             let provider = LocalAccountProvider(accountID: account.id, database: database)
             let feeds = try provider.fetchFeeds()
-            let counts = try provider.timelineQueryService.fetchSidebarCounts(accountID: account.id, startOfDayTimestamp: 0)
+            let counts = try provider.timelineQueryService.fetchSidebarCounts(accountID: account.id, startOfDayTimestamp: 0, includeMuted: true)
             let sync = try syncStates?[account.id] ?? database.read { try repository.fetchSyncState(accountID: account.id, in: $0) }
             let timestamp = sync?.lastSyncCompletedAt ?? (account.type == AccountType.local.rawValue
                 ? feeds.compactMap(\.lastRefreshedAt).max()?.timeIntervalSince1970 : nil)
