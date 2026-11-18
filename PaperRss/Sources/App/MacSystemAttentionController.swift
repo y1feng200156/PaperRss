@@ -134,7 +134,6 @@ final class MacSystemAttentionController: NSObject, ObservableObject {
         notificationCenter.delegate = self
         observeStore()
         observeWindowVisibility()
-        updateDockBadge()
         applyIconVisibility()
     }
 
@@ -146,7 +145,7 @@ final class MacSystemAttentionController: NSObject, ObservableObject {
     func setDockBadgeEnabled(_ enabled: Bool) {
         dockBadgeEnabled = enabled
         preferences.set(enabled, forKey: PreferenceKey.dockBadgeEnabled)
-        updateDockBadge()
+        updateDockBadge(unreadCount: store.sidebarCounts.allUnread)
     }
 
     /// 隐藏 Dock 图标：窗口打开期间仍保留程序坞与 Cmd+Tab 入口，
@@ -200,12 +199,14 @@ final class MacSystemAttentionController: NSObject, ObservableObject {
     }
 
     private func observeStore() {
+        // @Published 在写入前发送新值，回读 store 会拿到旧计数。
         store.$sidebarCounts
+            .map(\.allUnread)
+            .removeDuplicates()
             .dropFirst()
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.updateDockBadge()
-                self.updateStatusItem()
+            .sink { [weak self] unreadCount in
+                self?.updateDockBadge(unreadCount: unreadCount)
+                self?.updateStatusItem(unreadCount: unreadCount)
             }
             .store(in: &cancellables)
 
@@ -229,9 +230,8 @@ final class MacSystemAttentionController: NSObject, ObservableObject {
             .store(in: &cancellables)
     }
 
-    private func updateDockBadge() {
+    private func updateDockBadge(unreadCount: Int) {
         guard let application else { return }
-        let unreadCount = store.sidebarCounts.allUnread
         let label = FeedAttentionPolicy.dockBadgeLabel(
             unreadCount: unreadCount,
             enabled: dockBadgeEnabled
@@ -267,9 +267,10 @@ final class MacSystemAttentionController: NSObject, ObservableObject {
         } else {
             removeStatusItem()
         }
-        updateStatusItem()
+        let unreadCount = store.sidebarCounts.allUnread
+        updateStatusItem(unreadCount: unreadCount)
         scheduleIconVisibilitySync()
-        updateDockBadge()
+        updateDockBadge(unreadCount: unreadCount)
     }
 
     /// Dock 图标只在「用户没要求隐藏」或「应用还有窗口」时可见。
@@ -334,7 +335,6 @@ final class MacSystemAttentionController: NSObject, ObservableObject {
             button.setAccessibilityLabel("PaperRss")
         }
         statusItem = item
-        updateStatusItem()
     }
 
     private func removeStatusItem() {
@@ -343,9 +343,9 @@ final class MacSystemAttentionController: NSObject, ObservableObject {
         self.statusItem = nil
     }
 
-    private func updateStatusItem() {
+    private func updateStatusItem(unreadCount: Int) {
         guard let button = statusItem?.button else { return }
-        let title = FeedAttentionPolicy.menuBarUnreadTitle(unreadCount: store.sidebarCounts.allUnread)
+        let title = FeedAttentionPolicy.menuBarUnreadTitle(unreadCount: unreadCount)
         button.title = title ?? ""
         button.toolTip = title.map { I18N.shared.localizedFormat("未读 %@ 篇", $0) } ?? "PaperRss"
     }

@@ -27,7 +27,8 @@ final class MacSystemAttentionLifecycleContractTests: XCTestCase {
         let initializer = controller[initializerStart..<startMethod.lowerBound]
         XCTAssertFalse(initializer.contains("notificationCenter.delegate = self"))
         XCTAssertFalse(initializer.contains("observeStore()"))
-        XCTAssertFalse(initializer.contains("updateDockBadge()"))
+        XCTAssertFalse(initializer.contains("updateDockBadge("))
+        XCTAssertFalse(initializer.contains("applyIconVisibility()"))
 
         let startEnd = try XCTUnwrap(
             controller.range(of: "    func setDockBadgeEnabled", range: startMethod.upperBound..<controller.endIndex)?.lowerBound
@@ -36,11 +37,32 @@ final class MacSystemAttentionLifecycleContractTests: XCTestCase {
         let guardIndex = try XCTUnwrap(startBody.range(of: "guard !hasStarted else { return }")?.lowerBound)
         let applicationIndex = try XCTUnwrap(startBody.range(of: "self.application = application")?.lowerBound)
         let observeIndex = try XCTUnwrap(startBody.range(of: "observeStore()")?.lowerBound)
-        let updateIndex = try XCTUnwrap(startBody.range(of: "updateDockBadge()")?.lowerBound)
+        let updateIndex = try XCTUnwrap(startBody.range(of: "applyIconVisibility()")?.lowerBound)
         XCTAssertLessThan(guardIndex, applicationIndex)
         XCTAssertLessThan(applicationIndex, observeIndex)
         XCTAssertLessThan(observeIndex, updateIndex)
         XCTAssertTrue(controller.contains("guard let application else { return }"))
+    }
+
+    func testUnreadIndicatorsUsePublishedCountWithoutRereadingStore() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let controller = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "PaperRss/Sources/App/MacSystemAttentionController.swift"
+            ),
+            encoding: .utf8
+        )
+
+        let start = try XCTUnwrap(controller.range(of: "store.$sidebarCounts")?.lowerBound)
+        let end = try XCTUnwrap(controller.range(of: ".store(in: &cancellables)", range: start..<controller.endIndex)?.lowerBound)
+        let subscription = controller[start..<end]
+        // @Published emits before the property is assigned, so both renderers need the emitted value.
+        XCTAssertTrue(subscription.contains(".map(\\.allUnread)"))
+        XCTAssertTrue(subscription.contains("updateDockBadge(unreadCount: unreadCount)"))
+        XCTAssertTrue(subscription.contains("updateStatusItem(unreadCount: unreadCount)"))
+        XCTAssertFalse(subscription.contains("store.sidebarCounts"))
     }
 
     func testAppStartsAttentionControllerFromWindowAppearance() throws {
@@ -75,7 +97,7 @@ final class MacSystemAttentionLifecycleContractTests: XCTestCase {
         XCTAssertTrue(controller.contains("MacIconVisibilityPolicy.hidesDockIcon("))
         XCTAssertTrue(controller.contains("if showMenuBarIcon {"))
         XCTAssertTrue(controller.contains("private func installStatusItemIfNeeded()"))
-        XCTAssertTrue(controller.contains("private func updateStatusItem()"))
+        XCTAssertTrue(controller.contains("private func updateStatusItem(unreadCount: Int)"))
         XCTAssertTrue(controller.contains("func registerMainWindowOpener("))
         // 前置限制：只有菜单栏入口开启时才允许隐藏 Dock 图标。
         XCTAssertTrue(controller.contains("MacIconVisibilityPolicy.resolvesHideDockIcon("))
