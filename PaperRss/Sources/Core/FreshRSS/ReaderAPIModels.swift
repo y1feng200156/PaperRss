@@ -190,6 +190,8 @@ public struct ReaderAPIStreamItem: Codable, Sendable, Equatable {
     public let summary: ReaderAPIContent?
     public let content: ReaderAPIContent?
     public let author: String?
+    public let timestampUsec: String?
+    public let crawlTimeMsec: String?
 
     public init(
         id: String,
@@ -201,7 +203,9 @@ public struct ReaderAPIStreamItem: Codable, Sendable, Equatable {
         origin: ReaderAPIOrigin? = nil,
         summary: ReaderAPIContent? = nil,
         content: ReaderAPIContent? = nil,
-        author: String? = nil
+        author: String? = nil,
+        timestampUsec: String? = nil,
+        crawlTimeMsec: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -213,6 +217,40 @@ public struct ReaderAPIStreamItem: Codable, Sendable, Equatable {
         self.summary = summary
         self.content = content
         self.author = author
+        self.timestampUsec = timestampUsec
+        self.crawlTimeMsec = crawlTimeMsec
+    }
+
+    public init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        id = try fields.decode(String.self, forKey: .id)
+        title = try fields.decodeIfPresent(String.self, forKey: .title)
+        published = try fields.decodeIfPresent(Double.self, forKey: .published)
+        updated = try fields.decodeIfPresent(Double.self, forKey: .updated)
+        alternate = try fields.decodeIfPresent([ReaderAPIAlternate].self, forKey: .alternate)
+        categories = try fields.decodeIfPresent([String].self, forKey: .categories)
+        origin = try fields.decodeIfPresent(ReaderAPIOrigin.self, forKey: .origin)
+        summary = try fields.decodeIfPresent(ReaderAPIContent.self, forKey: .summary)
+        content = try fields.decodeIfPresent(ReaderAPIContent.self, forKey: .content)
+        author = try fields.decodeIfPresent(String.self, forKey: .author)
+
+        func readTimestamp(_ key: CodingKeys) -> String? {
+            (try? fields.decode(String.self, forKey: key))
+                ?? (try? fields.decode(UInt64.self, forKey: key)).map(String.init)
+        }
+        timestampUsec = readTimestamp(.timestampUsec)
+        crawlTimeMsec = readTimestamp(.crawlTimeMsec)
+    }
+
+    /// FreshRSS uses timestampUsec for receipt. Other Reader services can give it a different meaning.
+    var freshRSSReceivedAt: Double? {
+        if let timestampUsec, let value = UInt64(timestampUsec), value > 0 {
+            return Double(value) / 1_000_000
+        }
+        if let crawlTimeMsec, let value = UInt64(crawlTimeMsec), value > 0 {
+            return Double(value) / 1_000
+        }
+        return ReaderItemIDCodec.freshRSSReceivedAt(from: id)
     }
 
     /// 直接根据当前条目自带的 categories 判定是否为已读

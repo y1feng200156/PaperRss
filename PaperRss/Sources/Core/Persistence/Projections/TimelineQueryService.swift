@@ -52,6 +52,7 @@ public struct SidebarCounts: Sendable, Equatable {
 /// - 纯 SQL 聚合与关联投影，不物化全量 `content_html`、`article_caches`、`ai_artifacts`；
 /// - 杜绝 O(n) 全库 Swift 过滤与排序。
 public final class TimelineQueryService: Sendable {
+    private static let sortTimeSQL = "COALESCE(a.timeline_published_at, i.created_at)"
     private let database: LibraryDatabase
 
     public init(database: LibraryDatabase) {
@@ -333,7 +334,7 @@ public final class TimelineQueryService: Sendable {
             break
         }
 
-        // The normal first page of one feed can use the existing published-date
+        // The normal first page of one feed can use the timeline date
         // index to choose IDs before building row projections. COALESCE in the
         // general ORDER BY prevents that index from serving the LIMIT. If this
         // feed has an undated article, keep the general query: its created_at
@@ -348,21 +349,21 @@ public final class TimelineQueryService: Sendable {
            let limit, (1...200).contains(limit), offset == 0 {
             let hasUndatedArticle = try Bool.fetchOne(db, sql: """
                 SELECT EXISTS(
-                    SELECT 1 FROM articles a INDEXED BY idx_articles_published
+                    SELECT 1 FROM articles a INDEXED BY idx_articles_timeline_published
                     CROSS JOIN items i ON i.id = a.item_id
-                    WHERE a.published_at IS NULL AND i.feed_id = ?
+                    WHERE a.timeline_published_at IS NULL AND i.feed_id = ?
                 )
                 """, arguments: [feedID]) ?? false
             if !hasUndatedArticle {
                 let indexedIDs = try String.fetchAll(db, sql: """
                     SELECT a.item_id
-                    FROM articles a INDEXED BY idx_articles_published
+                    FROM articles a INDEXED BY idx_articles_timeline_published
                     CROSS JOIN items i ON i.id = a.item_id
                     INNER JOIN feeds f ON f.id = i.feed_id
                     LEFT JOIN accounts acc ON acc.id = i.account_id
                     WHERE i.feed_id = ? AND f.is_deleted = 0
                       AND (acc.is_enabled = 1 OR acc.id IS NULL) \(visibleClause)
-                    ORDER BY a.published_at DESC, i.id DESC
+                    ORDER BY a.timeline_published_at DESC, i.id DESC
                     LIMIT \(limit)
                     """, arguments: [feedID])
                 guard !indexedIDs.isEmpty else { return [] }
@@ -410,7 +411,7 @@ public final class TimelineQueryService: Sendable {
         LEFT JOIN accounts acc ON acc.id = i.account_id
         LEFT JOIN article_states s ON s.item_id = i.id
         WHERE \(whereClauses.joined(separator: " AND "))
-        ORDER BY COALESCE(a.published_at, i.created_at) DESC, i.id DESC
+        ORDER BY \(Self.sortTimeSQL) DESC, i.id DESC
         """
 
         if let limit {
@@ -522,9 +523,10 @@ public final class TimelineQueryService: Sendable {
         retainingIDs: Set<String> = [],
         in db: Database
     ) throws -> EntryListItem? {
-        // 1. 获取当前文章的排序基准 (published_at 或 created_at)
+        // 1. Use the same sort time for the current item as for the timeline.
+        let sortTime = Self.sortTimeSQL
         let curSql = """
-        SELECT COALESCE(a.published_at, i.created_at) AS sort_time
+        SELECT \(sortTime) AS sort_time
         FROM items i
         INNER JOIN articles a ON a.item_id = i.id
         WHERE i.id = :cur_id
@@ -624,12 +626,12 @@ public final class TimelineQueryService: Sendable {
         switch direction {
         case .next:
             // 下一篇：更旧的文章 (sort_time 较小，或同时间 id 较小)
-            whereClauses.append("(COALESCE(a.published_at, i.created_at) < :cur_sort_time OR (COALESCE(a.published_at, i.created_at) = :cur_sort_time AND i.id < :cur_id))")
-            orderClause = "ORDER BY COALESCE(a.published_at, i.created_at) DESC, i.id DESC"
+            whereClauses.append("(\(sortTime) < :cur_sort_time OR (\(sortTime) = :cur_sort_time AND i.id < :cur_id))")
+            orderClause = "ORDER BY \(sortTime) DESC, i.id DESC"
         case .previous:
             // 上一篇：更新的文章 (sort_time 较大，或同时间 id 较大)
-            whereClauses.append("(COALESCE(a.published_at, i.created_at) > :cur_sort_time OR (COALESCE(a.published_at, i.created_at) = :cur_sort_time AND i.id > :cur_id))")
-            orderClause = "ORDER BY COALESCE(a.published_at, i.created_at) ASC, i.id ASC"
+            whereClauses.append("(\(sortTime) > :cur_sort_time OR (\(sortTime) = :cur_sort_time AND i.id > :cur_id))")
+            orderClause = "ORDER BY \(sortTime) ASC, i.id ASC"
         }
 
         let sql = """

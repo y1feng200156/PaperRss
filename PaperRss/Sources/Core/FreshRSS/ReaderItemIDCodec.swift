@@ -58,6 +58,14 @@ public enum ReaderItemIDCodec: Sendable {
         return "\(tagPrefix)\(hex)"
     }
 
+    /// Native FreshRSS entry IDs encode the time of first receipt in Unix microseconds.
+    /// Use this only for FreshRSS, including entries stored before we kept the API timestamp.
+    static func freshRSSReceivedAt(from id: String) -> Double? {
+        let decimal = canonicalComparisonKey(for: id)
+        guard decimal.count == 16, let microseconds = UInt64(decimal, radix: 10) else { return nil }
+        return Double(microseconds) / 1_000_000
+    }
+
     /// 将远端 ID 集合构造成快速比对的 Canonical Key Set
     public static func buildCanonicalKeySet(from ids: some Sequence<String>) -> Set<String> {
         var set = Set<String>()

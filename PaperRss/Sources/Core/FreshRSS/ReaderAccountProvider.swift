@@ -997,6 +997,14 @@ public actor ReaderAccountProvider: AccountProvider {
                     try newArticle.save(db)
                 }
 
+                if self.variant == .freshRSS, let receivedAt = item.freshRSSReceivedAt {
+                    // Keep receipt metadata independent from the original publication date.
+                    try db.execute(sql: """
+                        UPDATE articles SET fresh_rss_received_at = ?
+                        WHERE item_id = ? AND fresh_rss_received_at IS NOT ?
+                        """, arguments: [receivedAt, internalItemID, receivedAt])
+                }
+
                 // 状态计算：当前 stream item 自身自带权威 categories
                 let remoteItemRead = item.isMarkedReadByCategories
                 let remoteItemStarred = item.isMarkedStarredByCategories

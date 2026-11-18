@@ -568,6 +568,57 @@ final class FreshRSSIntegrationTests: XCTestCase {
 
     // MARK: - 4. State Reconciliation (Pending Local Mutation Wins for That Field Only)
 
+    func testFreshRSSTimelineSortsFuturePublicationByReceiptAndKeepsOriginalDate() async throws {
+        let accountID = "freshrss-date-test"
+        let feedID = UUID().uuidString
+        let endpoint = URL(string: "https://date.example.com")!
+        try inMemoryCredentialStore.saveFreshRSSPassword("fixture", accountID: accountID)
+        try database.write { db in
+            try AccountRecord(id: accountID, type: "freshRSS", displayName: "FreshRSS", createdAt: 0, updatedAt: 0).save(db)
+            try FeedRecord(id: feedID, accountID: accountID, externalID: "feed/1",
+                           title: "Feed", feedURL: "https://date.example.com/rss", updatedAt: 0).save(db)
+        }
+
+        MockFreshRSSURLProtocol.setHandler { request in
+            let url = try XCTUnwrap(request.url)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            if url.path.hasSuffix("ClientLogin") {
+                return (response, Data("Auth=mock_auth".utf8))
+            }
+            if url.path.contains("stream/items/ids") {
+                return (response, Data(#"{"itemRefs":[]}"#.utf8))
+            }
+            guard url.path.contains("stream/contents") else { throw URLError(.badURL) }
+            return (response, Data("""
+                {"items":[
+                    {"id":"future","title":"Future","published":1700000900,
+                     "timestampUsec":"1700000200000000","crawlTimeMsec":"1700000200000",
+                     "origin":{"streamId":"feed/1"}},
+                    {"id":"normal","title":"Normal","published":1700000300,
+                     "timestampUsec":1700000400000000,"origin":{"streamId":"feed/1"}},
+                    {"id":"older","title":"Older","published":1700000100,
+                     "crawlTimeMsec":"1700000500000","origin":{"streamId":"feed/1"}}
+                ]}
+                """.utf8))
+        }
+        let provider = FreshRSSAccountProvider(
+            accountID: accountID, endpointURL: endpoint, username: "fixture", database: database,
+            credentialStore: inMemoryCredentialStore, session: mockSession
+        )
+        try await provider.syncArticlesAndStates()
+
+        let query = TimelineQueryService(database: database)
+        let scope = TimelineScope.feed(feedID: feedID)
+        let entries = try query.fetchListItems(scope: .all)
+        XCTAssertEqual(entries.map(\.title), ["Normal", "Future", "Older"])
+        XCTAssertEqual(try query.fetchListItems(scope: scope, limit: 1).map(\.title), ["Normal"])
+        XCTAssertEqual(try query.fetchListItems(scope: scope, limit: 1, offset: 1).map(\.title), ["Future"])
+        let future = try XCTUnwrap(entries.first { $0.title == "Future" })
+        XCTAssertEqual(future.publishedAt, Date(timeIntervalSince1970: 1_700_000_900))
+        XCTAssertEqual(try query.fetchAdjacentItem(scope: scope, currentItemID: future.id, direction: .previous)?.title, "Normal")
+        XCTAssertEqual(try query.fetchAdjacentItem(scope: scope, currentItemID: future.id, direction: .next)?.title, "Older")
+    }
+
     func testPendingLocalMutationWinsForThatFieldOnly() async throws {
         let accountID = "freshrss-reconcile-test"
         let endpoint = URL(string: "https://freshrss.example.com")!

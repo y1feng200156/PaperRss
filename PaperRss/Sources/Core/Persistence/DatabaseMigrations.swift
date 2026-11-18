@@ -783,6 +783,33 @@ public enum DatabaseMigrations {
                 """)
         }
 
+        migrator.registerMigration("v26-freshrss-received-date") { db in
+            try db.execute(sql: """
+                ALTER TABLE articles ADD COLUMN fresh_rss_received_at REAL;
+                ALTER TABLE articles ADD COLUMN timeline_published_at REAL GENERATED ALWAYS AS (
+                    CASE WHEN fresh_rss_received_at < published_at THEN fresh_rss_received_at
+                         ELSE published_at END
+                ) VIRTUAL;
+                """)
+            let items = try Row.fetchCursor(db, sql: """
+                SELECT i.id, i.external_id FROM items i
+                INNER JOIN accounts acc ON acc.id = i.account_id
+                WHERE acc.type = 'freshRSS'
+                """)
+            let update = try db.makeStatement(sql: """
+                UPDATE articles SET fresh_rss_received_at = ? WHERE item_id = ?
+                """)
+            while let item = try items.next() {
+                let externalID: String = item["external_id"]
+                guard let receivedAt = ReaderItemIDCodec.freshRSSReceivedAt(from: externalID) else { continue }
+                let itemID: String = item["id"]
+                try update.execute(arguments: [receivedAt, itemID])
+            }
+            try db.execute(sql: """
+                CREATE INDEX idx_articles_timeline_published ON articles(timeline_published_at DESC);
+                """)
+        }
+
         return migrator
     }
 

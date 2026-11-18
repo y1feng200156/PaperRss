@@ -229,6 +229,43 @@ final class DatabaseSchemaTests: XCTestCase {
         }
     }
 
+    func testFreshRSSReceiptMigrationBackfillsOnlyNativeFreshRSSIDs() throws {
+        let queue = try DatabaseQueue()
+        let migrator = DatabaseMigrations.migrator
+        try migrator.migrate(queue, upTo: "v25-keyword-mute-rules")
+        let nativeID = try XCTUnwrap(ReaderItemIDCodec.formatTagID(fromDecimal: "1700000200000000"))
+        try queue.write { db in
+            for (id, type, externalID) in [
+                ("native", "freshRSS", nativeID),
+                ("decimal", "freshRSS", "1700000200000000"),
+                ("opaque", "freshRSS", "opaque-entry"),
+                ("miniflux", "miniflux", nativeID),
+                ("local", "local", nativeID)
+            ] {
+                try AccountRecord(id: id, type: type, displayName: id, createdAt: 0, updatedAt: 0).save(db)
+                try FeedRecord(id: id, accountID: id, title: id, feedURL: "https://dates.example/\(id)", updatedAt: 0).save(db)
+                try ItemRecord(id: id, accountID: id, externalID: externalID,
+                               feedID: id, createdAt: 1_700_000_900, updatedAt: 0).save(db)
+                try ArticleRecord(itemID: id, title: id, publishedAt: 1_700_000_900).save(db)
+            }
+        }
+
+        try migrator.migrate(queue)
+        try queue.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT item_id, published_at, timeline_published_at
+                FROM articles
+                """)
+            XCTAssertEqual(rows.count, 5)
+            for row in rows {
+                let id: String = row["item_id"]
+                XCTAssertEqual(row["published_at"] as Double, 1_700_000_900, id)
+                XCTAssertEqual(row["timeline_published_at"] as Double,
+                               id == "native" || id == "decimal" ? 1_700_000_200 : 1_700_000_900, id)
+            }
+        }
+    }
+
     func testV12MigrationPurgesSoftDeletedLocalFeedsAndCascades() throws {
         let legacyURL = temporaryDirectoryURL.appendingPathComponent("legacy-v11.sqlite")
         let pool = try DatabasePool(path: legacyURL.path)
