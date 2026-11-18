@@ -386,6 +386,7 @@ public final class TimelineQueryService: Sendable {
             COALESCE(a.title, '') AS title,
             a.url AS url,
             a.preview_image_url AS preview_image_url,
+            a.preview_extraction_revision AS preview_extraction_revision,
             COALESCE(a.summary, '') AS summary,
             f.title AS feed_title,
             COALESCE(
@@ -451,7 +452,7 @@ public final class TimelineQueryService: Sendable {
             let accountType: String = row["account_type"] ?? AccountType.local.rawValue
             let accountDisplayName: String = row["account_display_name"] ?? "Local"
 
-            return EntryListItem(
+            var item = EntryListItem(
                 id: id,
                 feedID: feedUUID,
                 title: title,
@@ -467,6 +468,8 @@ public final class TimelineQueryService: Sendable {
                 accountDisplayName: accountDisplayName,
                 previewImageURL: (row["preview_image_url"] as String?).flatMap { EntryPreviewImageExtractor.safeURL($0) }
             )
+            item.previewExtractionRevision = row["preview_extraction_revision"]
+            return item
         }
     }
 

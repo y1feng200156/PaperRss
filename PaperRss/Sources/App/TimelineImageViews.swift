@@ -84,6 +84,8 @@ final class TimelinePresentationMemory: ObservableObject {
     var visibleAnchor: String?
     var visibleRowFrames: [String: CGRect] = [:]
     var viewportFrame: CGRect = .zero
+    // Scrolling changes thumbnail eligibility without invalidating the list.
+    let thumbnailEligibilityUpdates = CurrentValueSubject<Set<String>, Never>([])
     private var listVisibilityTask: Task<Void, Never>?
     private var listVisibilityGeneration: UInt64 = 0
     private var navigationScope: TimelineScope?
@@ -194,6 +196,7 @@ final class TimelinePresentationMemory: ObservableObject {
         visibleAnchor = nil
         visibleRowFrames = [:]
         viewportFrame = .zero
+        if !thumbnailEligibilityUpdates.value.isEmpty { thumbnailEligibilityUpdates.send([]) }
         browseAnchor = nil
         magazineAnchor = nil
         restoreAnchor = nil
@@ -255,10 +258,8 @@ struct ArticleThumbnailView: View {
             do {
                 let image = try await store.image(for: request)
                 try Task.checkCancellation()
-                withAnimation(.easeOut(duration: 0.15)) {
-                    loadedRequest = request
-                    loaded = image
-                }
+                loadedRequest = request
+                loaded = image
             } catch {
                 guard !Task.isCancelled else { return }
                 loaded = nil

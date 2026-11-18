@@ -116,6 +116,40 @@ final class ArticlePreviewPersistenceTests: XCTestCase {
         }
     }
 
+    func testTimelinePagesIncludeLegacyPreviewURLsBeforeDisplay() async throws {
+        let feed = Feed(title: "Feed", feedURL: URL(string: "https://publisher.example/rss")!)
+        let store = AppStore(testDatabase: AppDatabase(feeds: [feed], entries: [],
+            articleCaches: [:], readingStates: [:], artifacts: [], llmConfiguration: .default))
+        try store.libraryDatabase.write { db in
+            for index in 0..<3 {
+                let id = "legacy-\(index)"
+                let date = Double(100 - index)
+                try ItemRecord(id: id, accountID: "local-default", externalID: id,
+                    feedID: feed.id.uuidString, createdAt: date, updatedAt: date).save(db)
+                let html = index == 2 ? "<p>No image</p>" : "<img src='/cover-\(index).jpg'>"
+                try ArticleRecord(itemID: id, title: id, contentHTML: html, contentUpdatedAt: date).save(db)
+                try ArticleStateRecord(itemID: id, isRead: true, isStarred: true,
+                    dateArrived: date, updatedAt: date).save(db)
+            }
+        }
+        let scope = TimelineScope.feed(feedID: feed.id.uuidString)
+        let revision = store.timelineRevision
+        let imagesHidden = await store.fetchTimelinePageAsync(scope: scope, limit: 1)
+        XCTAssertEqual(imagesHidden.map(\.id), ["legacy-0"])
+        XCTAssertNil(imagesHidden.first?.previewImageURL)
+        let first = await store.fetchTimelinePageAsync(scope: scope, limit: 1, preparesPreviews: true)
+        XCTAssertEqual(first.first?.previewImageURL?.path, "/cover-0.jpg")
+
+        let nextUnprepared = await store.fetchTimelinePageAsync(scope: scope, limit: 2, offset: 1)
+        XCTAssertTrue(nextUnprepared.allSatisfy { $0.previewImageURL == nil })
+        let next = await store.fetchTimelinePageAsync(scope: scope, limit: 2, offset: 1, preparesPreviews: true)
+        XCTAssertEqual(next.map(\.id), ["legacy-1", "legacy-2"])
+        XCTAssertEqual(next.first?.previewImageURL?.path, "/cover-1.jpg")
+        XCTAssertNil(next.last?.previewImageURL)
+        XCTAssertTrue((first + next).allSatisfy { $0.isRead && $0.isStarred })
+        XCTAssertEqual(store.timelineRevision, revision)
+    }
+
     func testRevisionTwoRepairsOversizedOriginalUsingStoredDescriptionWithoutChangingArticleState() async throws {
         let (database, root) = try temporaryDatabase()
         defer { try? FileManager.default.removeItem(at: root) }

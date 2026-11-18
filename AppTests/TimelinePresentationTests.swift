@@ -359,8 +359,10 @@ final class TimelinePresentationTests: XCTestCase {
         let entry = EntryListItem(id: "image", feedID: UUID(), title: "Short title", sourceTitle: "Feed",
                                   previewImageURL: URL(string: "https://example.invalid/image.jpg"))
         func height(showsImages: Bool, loadsThumbnail: Bool) -> CGFloat {
-            measuredHeight(EntryRow(entry: entry, isSelected: false, isFocused: true,
-                showsImages: showsImages, loadsThumbnail: loadsThumbnail, thumbnailStore: thumbnails,
+            let presentation = TimelinePresentationMemory()
+            if loadsThumbnail { presentation.thumbnailEligibilityUpdates.send([entry.id]) }
+            return measuredHeight(EntryRow(entry: entry, isSelected: false, isFocused: true,
+                showsImages: showsImages, presentation: presentation, thumbnailStore: thumbnails,
                 palette: ReaderAppearance.default.palette(for: .light), displayScale: 2,
                 translation: nil, appLanguage: .system).environmentObject(icons), width: 280)
         }

@@ -1058,14 +1058,12 @@ public final class AppStore: ObservableObject {
     }
 
     /// Metadata only: no image downloads, reader preparation or read-state changes.
-    public func prepareTimelinePreviews(entryIDs: [String]) async {
-        var didChange = false
+    private func prepareTimelinePreviews(entryIDs: [String]) async {
         for offset in stride(from: 0, to: entryIDs.count, by: 100) {
-            guard !Task.isCancelled else { break }
+            guard !Task.isCancelled else { return }
             let ids = Array(entryIDs[offset..<min(offset + 100, entryIDs.count)])
-            if let count = try? await previewBackfill.prepare(entryIDs: ids), count > 0 { didChange = true }
+            _ = try? await previewBackfill.prepare(entryIDs: ids)
         }
-        if didChange { timelineRevision &+= 1 }
     }
 
     public func keywordMuteRule(for scope: KeywordMuteScope) async throws -> KeywordMuteRule {
@@ -1119,15 +1117,27 @@ public final class AppStore: ObservableObject {
         unreadOnly: Bool = false,
         retainingIDs: Set<String> = [],
         limit: Int = 100,
-        offset: Int = 0
+        offset: Int = 0,
+        preparesPreviews: Bool = false
     ) async -> [EntryListItem] {
-        (try? await localProvider.timelineQueryService.fetchListItemsAsync(
-            scope: scope,
-            unreadOnly: unreadOnly,
-            retainingIDs: retainingIDs,
-            limit: limit,
-            offset: offset
-        )) ?? []
+        func fetchPage() async throws -> [EntryListItem] {
+            try await localProvider.timelineQueryService.fetchListItemsAsync(
+                scope: scope, unreadOnly: unreadOnly, retainingIDs: retainingIDs,
+                limit: limit, offset: offset
+            )
+        }
+
+        guard let page = try? await fetchPage() else { return [] }
+        guard preparesPreviews, !Task.isCancelled else { return page }
+        let staleIDs = page.filter { $0.previewExtractionRevision < EntryPreviewImage.currentRevision }.map(\.id)
+        guard !staleIDs.isEmpty else { return page }
+
+        // Establish which rows reserve thumbnail space before publishing the page.
+        // Read again even if this repair changed nothing: an overlapping request
+        // may have repaired the same articles after the first read.
+        await prepareTimelinePreviews(entryIDs: staleIDs)
+        guard !Task.isCancelled else { return page }
+        return (try? await fetchPage()) ?? page
     }
 
     public func fetchAdjacentItem(

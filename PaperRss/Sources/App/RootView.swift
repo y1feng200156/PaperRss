@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import UniformTypeIdentifiers
 import os
 #if os(macOS)
@@ -2822,7 +2823,6 @@ struct EntryListView: View {
     @ObservedObject var presentation = TimelinePresentationMemory()
     var onOpenEntry: () -> Void = {}
     @State private var visualSelectionID: String?
-    @State private var visibleImageIDs: Set<String> = []
     @FocusState private var visualHasFocus: Bool
 
     @State private var loadedEntries: [EntryListItem] = []
@@ -2831,9 +2831,7 @@ struct EntryListView: View {
     @State private var isLoadingPage: Bool = true
     @State private var nextPageTask: Task<Void, Never>?
     @State private var currentPagesReloadTask: Task<Void, Never>?
-    // Advance only after a complete preview batch. A cancelled batch is retried.
-    @State private var previewPreparedCount = 0
-    @State private var previewPreparationID = UUID()
+    @State private var preparesPreviews = false
     @State private var lastScrolledPageGeneration: UInt64?
     private let pageSize = 100
 
@@ -2906,6 +2904,22 @@ struct EntryListView: View {
         loadedEntries.contains { !$0.isRead }
     }
 
+    private func fetchPage(for request: InitialPageRequest, retainingIDs: Set<String>,
+                           limit: Int, offset: Int = 0) async -> [EntryListItem] {
+        func fetch(preparesPreviews: Bool) async -> [EntryListItem] {
+            await store.fetchTimelinePageAsync(scope: request.scope, unreadOnly: request.unreadOnly,
+                retainingIDs: retainingIDs, limit: limit, offset: offset, preparesPreviews: preparesPreviews)
+        }
+
+        let preparedOnFetch = preparesPreviews
+        let page = await fetch(preparesPreviews: preparedOnFetch)
+        // The image setting can change while a page is in flight.
+        if !preparedOnFetch, preparesPreviews, !Task.isCancelled {
+            return await fetch(preparesPreviews: true)
+        }
+        return page
+    }
+
     private func loadInitialPage(for request: InitialPageRequest) async {
         nextPageTask?.cancel()
         nextPageTask = nil
@@ -2921,8 +2935,7 @@ struct EntryListView: View {
             snapshot: { .init(timelineRevision: store.timelineRevision, retainedIDs: retainedUnreadIDs) },
             isRequested: { initialPageRequest == request },
             fetch: { inputs in
-                await store.fetchTimelinePageAsync(scope: request.scope, unreadOnly: request.unreadOnly,
-                    retainingIDs: inputs.retainedIDs, limit: pageSize, offset: 0)
+                await fetchPage(for: request, retainingIDs: inputs.retainedIDs, limit: pageSize)
             },
             commit: { firstPage, inputs in
                 presentation.resetScope()
@@ -2932,11 +2945,8 @@ struct EntryListView: View {
                 loadedEntryIndexes = Dictionary(uniqueKeysWithValues: firstPage.enumerated().map { ($0.element.id, $0.offset) })
                 presentation.setNavigationPage(scope: request.scope, unreadOnly: request.unreadOnly,
                                                revision: inputs.timelineRevision, ids: firstPage.map(\.id))
-                visibleImageIDs.removeAll()
                 hasMore = firstPage.count == pageSize
                 isLoadingPage = false
-                previewPreparedCount = 0
-                previewPreparationID = UUID()
                 store.iconStore.warmUp(items: firstPage)
             }
         )
@@ -2956,16 +2966,16 @@ struct EntryListView: View {
         let generation = presentation.pageGeneration
         let offset = loadedEntries.count
         nextPageTask = Task {
+            defer {
+                if !Task.isCancelled, presentation.pageGeneration == generation {
+                    isLoadingPage = false
+                    nextPageTask = nil
+                }
+            }
             while !Task.isCancelled, allowsInteraction, presentation.pageGeneration == generation {
                 let revision = store.timelineRevision
                 let retainingIDs = retainedUnreadIDs
-                let page = await store.fetchTimelinePageAsync(
-                    scope: request.scope,
-                    unreadOnly: request.unreadOnly,
-                    retainingIDs: retainingIDs,
-                    limit: pageSize,
-                    offset: offset
-                )
+                let page = await fetchPage(for: request, retainingIDs: retainingIDs, limit: pageSize, offset: offset)
                 guard !Task.isCancelled, allowsInteraction, presentation.pageGeneration == generation,
                       initialPageRequest == request, loadedEntries.count == offset else { return }
                 guard store.timelineRevision == revision, retainedUnreadIDs == retainingIDs else { continue }
@@ -2980,48 +2990,24 @@ struct EntryListView: View {
                     presentation.setNavigationPage(scope: request.scope, unreadOnly: request.unreadOnly,
                                                    revision: revision, ids: loadedEntries.map(\.id))
                     hasMore = page.count == pageSize
-                    previewPreparationID = UUID()
                     store.iconStore.warmUp(items: freshItems)
                 }
-                isLoadingPage = false
                 return
             }
         }
-    }
-
-    private func reloadCurrentPages() {
-        guard allowsInteraction else { return }
-        currentPagesReloadTask?.cancel()
-        currentPagesReloadTask = nil
-        let totalCount = max(pageSize, loadedEntries.count)
-        let refreshed = store.fetchTimelinePage(
-            scope: timelineScope,
-            unreadOnly: unreadOnly,
-            retainingIDs: retainedUnreadIDs,
-            limit: totalCount,
-            offset: 0
-        )
-        applyRefreshedPages(refreshed, totalCount: totalCount)
     }
 
     private func scheduleCurrentPagesReload() {
         guard allowsInteraction else { return }
         currentPagesReloadTask?.cancel()
         let request = initialPageRequest
-        let scope = timelineScope
         let retainedIDs = retainedUnreadIDs
         let totalCount = max(pageSize, loadedEntries.count)
         let revision = store.timelineRevision
         let generation = presentation.pageGeneration
         currentPagesReloadTask = Task {
             let startedAt = ProcessInfo.processInfo.systemUptime
-            let refreshed = await store.fetchTimelinePageAsync(
-                scope: scope,
-                unreadOnly: request.unreadOnly,
-                retainingIDs: retainedIDs,
-                limit: totalCount,
-                offset: 0
-            )
+            let refreshed = await fetchPage(for: request, retainingIDs: retainedIDs, limit: totalCount)
             guard !Task.isCancelled, allowsInteraction, presentation.pageGeneration == generation,
                   initialPageRequest == request else { return }
             // A read-state change can add a retained unread ID without changing
@@ -3039,8 +3025,6 @@ struct EntryListView: View {
     }
 
     private func applyRefreshedPages(_ refreshed: [EntryListItem], totalCount: Int) {
-        let pageIdentityChanged = refreshed.count != loadedEntries.count ||
-            zip(refreshed, loadedEntries).contains { $0.0.id != $0.1.id }
         loadedEntries = refreshed
         loadedEntryIndexes = Dictionary(uniqueKeysWithValues: refreshed.enumerated().map { ($0.element.id, $0.offset) })
         presentation.setNavigationPage(
@@ -3050,10 +3034,6 @@ struct EntryListView: View {
             ids: refreshed.map(\.id)
         )
         hasMore = (refreshed.count >= totalCount)
-        if pageIdentityChanged {
-            previewPreparedCount = 0
-            previewPreparationID = UUID()
-        }
         // 刷新后的列表可能引入新 feed，幂等预热（store 内自动去重）。
         store.iconStore.warmUp(items: refreshed)
     }
@@ -3092,7 +3072,7 @@ struct EntryListView: View {
             store.markAllRead(feedIDs: ids)
         }
         retainedUnreadIDs = selectedEntryID.map { [$0] } ?? []
-        reloadCurrentPages()
+        scheduleCurrentPagesReload()
     }
 
     private func patchEntryState(entryID: String, isRead: Bool? = nil, isStarred: Bool? = nil) {
@@ -3126,7 +3106,7 @@ struct EntryListView: View {
     private func entryRowView(for entry: EntryListItem) -> some View {
         let isSelected = selectedEntryID == entry.id
         EntryRow(entry: entry, isSelected: isSelected, isFocused: isListFocused,
-                 showsImages: showsImages, loadsThumbnail: visibleImageIDs.contains(entry.id),
+                 showsImages: showsImages, presentation: presentation,
                  thumbnailStore: store.thumbnailStore,
                  palette: appearancePalette, displayScale: displayScale,
                  translation: titleTranslator.translations[entry.id], appLanguage: store.appLanguage)
@@ -3237,12 +3217,11 @@ struct EntryListView: View {
                 visibleIndexes.append(index)
             }
         }
-        if viewStyle == .list, showsImages {
-            let imageIDs = Set(visibleIndexes.compactMap { index -> String? in
-                let entry = loadedEntries[index]
-                return entry.previewImageURL == nil ? nil : entry.id
-            })
-            if imageIDs != visibleImageIDs { visibleImageIDs = imageIDs }
+        if viewStyle == .list {
+            let eligibleIDs = Set(visibleIndexes.map { loadedEntries[$0].id })
+            if eligibleIDs != presentation.thumbnailEligibilityUpdates.value {
+                presentation.thumbnailEligibilityUpdates.send(eligibleIDs)
+            }
         }
         guard !visibleIndexes.isEmpty else { return (firstVisible?.id, lastVisibleIndex) }
         visibleIndexes.sort()
@@ -3429,19 +3408,9 @@ struct EntryListView: View {
                 }
                 presentation.finishRestoration()
             }
-            .task(id: previewPreparationID) {
-                guard allowsInteraction, showsImages, previewPreparedCount < loadedEntries.count else { return }
-                let end = loadedEntries.count
-                let ids = loadedEntries[previewPreparedCount..<end].map(\.id)
-                // AppStore batches its SQL work and publishes one timeline revision
-                // for the entire pending range, rather than once per page.
-                await store.prepareTimelinePreviews(entryIDs: ids)
-                guard !Task.isCancelled else { return }
-                previewPreparedCount = end
-            }
-            .onChange(of: showsImages) { _, enabled in
-                if enabled { previewPreparedCount = 0 }
-                previewPreparationID = UUID()
+            .onChange(of: showsImages, initial: true) { wasEnabled, enabled in
+                preparesPreviews = enabled
+                if enabled && !wasEnabled { scheduleCurrentPagesReload() }
             }
             .onChange(of: keyboardRequest) { _, request in
                 if let request { handleTimelineKey(request, proxy: proxy, width: geometry.size.width) }
@@ -3849,20 +3818,21 @@ struct EntryRow: View, Equatable {
     let isSelected: Bool
     let isFocused: Bool
     var showsImages = false
-    var loadsThumbnail = false
+    let presentation: TimelinePresentationMemory
     var thumbnailStore: ArticleThumbnailStore?
     let palette: ReaderAppearancePalette
     let displayScale: CGFloat
     let translation: TranslatedEntryText?
     let appLanguage: AppLanguage
     @State private var revealsOriginal = false
+    @State private var loadsThumbnail = false
 
     private var appearancePalette: ReaderAppearancePalette { palette }
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.entry == rhs.entry && lhs.isSelected == rhs.isSelected &&
             lhs.isFocused == rhs.isFocused && lhs.showsImages == rhs.showsImages &&
-            lhs.loadsThumbnail == rhs.loadsThumbnail && lhs.thumbnailStore === rhs.thumbnailStore && lhs.palette == rhs.palette &&
+            lhs.presentation === rhs.presentation && lhs.thumbnailStore === rhs.thumbnailStore && lhs.palette == rhs.palette &&
             lhs.displayScale == rhs.displayScale && lhs.translation == rhs.translation &&
             lhs.appLanguage == rhs.appLanguage
     }
@@ -3949,12 +3919,16 @@ struct EntryRow: View, Equatable {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     if showsImages, let thumbnailStore, let url = entry.previewImageURL {
+                        let entryID = entry.id
                         Color.clear.frame(width: 68, height: 54)
                             .overlay {
                                 if loadsThumbnail {
                                     ArticleThumbnailView(request: .init(accountID: entry.accountID, url: url, pixelSize: Int(68 * displayScale)),
                                                          store: thumbnailStore, width: 68, height: 54)
                                 }
+                            }
+                            .onReceive(presentation.thumbnailEligibilityUpdates.map { $0.contains(entryID) }.removeDuplicates()) { eligible in
+                                if loadsThumbnail != eligible { loadsThumbnail = eligible }
                             }
                             .padding(.top, 2)
                     }

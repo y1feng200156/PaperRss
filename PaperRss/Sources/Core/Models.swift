@@ -203,6 +203,7 @@ public struct EntryListItem: Identifiable, Hashable, Sendable {
     public let sourceTitle: String
     public let feedIconURL: URL?
     public let previewImageURL: URL?
+    var previewExtractionRevision = EntryPreviewImage.currentRevision
     public let publishedAt: Date?
     public var isRead: Bool
     public var isStarred: Bool

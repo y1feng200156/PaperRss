@@ -41,7 +41,9 @@ public actor ArticlePreviewBackfill {
                          previewURL: row["preview_image_url"], previewSource: row["preview_image_source"])
             }
         }
-        let results = snapshots.map { snapshot in
+        guard !snapshots.isEmpty else { return 0 }
+        let results = try snapshots.map { snapshot in
+            try Task.checkCancellation()
             // Preserve an explicit cover across extraction revisions, including
             // when retention has removed the body. Only a verified same-image
             // responsive variant is allowed to replace it.
