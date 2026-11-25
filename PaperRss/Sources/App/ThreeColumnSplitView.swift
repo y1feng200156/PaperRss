@@ -51,36 +51,6 @@ private final class LegacyReaderCapsuleMaterialContainer: NSVisualEffectView {
     }
 }
 
-private struct TimelineReturnGlassButton: View {
-    let label: String
-    let color: Color
-    let action: () -> Void
-
-    private var button: some View {
-        Button(action: action) {
-            Image(systemName: "chevron.left")
-                .font(.system(size: 11, weight: .semibold))
-                .frame(width: 32, height: 32)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(color)
-        .help(label)
-        .accessibilityLabel(label)
-        .accessibilityIdentifier("timeline.returnToBrowse")
-    }
-
-    @ViewBuilder var body: some View {
-        if #available(macOS 26.0, *) {
-            button.glassEffect(.regular.interactive(), in: .circle)
-        } else {
-            button.buttonStyle(.plain)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
-                .shadow(color: Color.black.opacity(0.10), radius: 5, y: 2)
-        }
-    }
-}
-
 // MARK: - 工具栏动作回调
 
 /// 由 SwiftUI 视图层传入的工具栏动作和状态
@@ -617,11 +587,13 @@ final class ThreeColumnSplitViewCoordinator: NSObject, NSToolbarDelegate {
         }
 
         private func timelineBackRootView() -> AnyView {
-            AnyView(TimelineReturnGlassButton(
+            AnyView(ReaderGlassButton(
+                systemImage: "chevron.left",
                 label: I18N.localized("返回浏览"),
                 color: Color(nsColor: chromeInkColor),
                 action: { [weak self] in self?.actions.onReturnToTimeline() }
-            ))
+            )
+            .accessibilityIdentifier("timeline.returnToBrowse"))
         }
 
         @MainActor

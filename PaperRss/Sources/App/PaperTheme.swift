@@ -235,6 +235,63 @@ struct AppearanceHeaderSurface: View {
     }
 }
 
+#if os(macOS)
+struct ReaderGlassButton: View {
+    let systemImage: String
+    let label: String
+    let color: Color
+    let action: () -> Void
+
+    private var button: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 32, height: 32)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(color)
+        .help(label)
+        .accessibilityLabel(label)
+    }
+
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            button.glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            button.background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+                .shadow(color: Color.black.opacity(0.10), radius: 5, y: 2)
+        }
+    }
+}
+#endif
+
+extension View {
+    func paperSidebarAppearance(_ appearance: ReaderAppearance, mode: ReaderAppearanceMode) -> some View {
+        let palette = appearance.palette(for: mode, surface: .sidebar)
+        return background {
+            AppearanceSurface(role: .sidebar, appearance: appearance, mode: mode, textureOpacity: 0.52)
+                .ignoresSafeArea()
+        }
+        .environment(\.colorScheme, palette.colorScheme == .dark ? .dark : .light)
+        .environment(\.paperAppearancePalette, palette)
+    }
+
+    func paperSidebarBar(
+        _ appearance: ReaderAppearance,
+        mode: ReaderAppearanceMode,
+        dividerEdge: VerticalEdge
+    ) -> some View {
+        padding(.horizontal, 16)
+            .frame(minHeight: 44)
+            .background(AppearanceHeaderSurface(role: .sidebar, appearance: appearance, mode: mode))
+            .overlay(alignment: dividerEdge == .top ? .top : .bottom) {
+                Divider().opacity(0.15).accessibilityHidden(true)
+            }
+    }
+}
+
 /// 文章列表滚动时的顶部导航材质。
 /// 与订阅源列表的标题栏复用同一套 AppearanceHeaderSurface，仅降低主题色叠加并
 /// 加入向下渐隐的 mask，让内容透过原生 material 柔和浮现，而不是形成不透明色块。

@@ -1689,17 +1689,7 @@ private struct SidebarView: View {
             Color.clear.frame(height: 44)
         }
         #endif
-        .background {
-            AppearanceSurface(
-                role: .sidebar,
-                appearance: store.readerAppearance,
-                mode: appearanceMode,
-                textureOpacity: 0.52
-            )
-            .ignoresSafeArea()
-        }
-        .environment(\.colorScheme, appearanceColorScheme)
-        .environment(\.paperAppearancePalette, store.readerAppearance.palette(for: appearanceMode))
+        .paperSidebarAppearance(store.readerAppearance, mode: appearanceMode)
         #if os(iOS)
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
@@ -1773,53 +1763,42 @@ private struct SidebarView: View {
 
     @ViewBuilder
     private var settingsFooter: some View {
-        VStack(spacing: 0) {
-            Divider()
-                .opacity(0.15)
-            HStack(spacing: 8) {
-                Button(action: showSettings) {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(I18N.localized("设置"))
-                .help(I18N.localized("设置"))
-
-                #if os(macOS)
-                Button {
-                    showsFeedbackPopover.toggle()
-                } label: {
-                    Image(systemName: "exclamationmark.bubble")
-                        .frame(width: 28, height: 24)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(I18N.shared.localized("反馈与联系", "Feedback & Contact"))
-                .help(I18N.shared.localized("反馈与联系", "Feedback & Contact"))
-                .popover(isPresented: $showsFeedbackPopover, arrowEdge: .bottom) {
-                    FeedbackPopoverView(store: store) {
-                        showsFeedbackPopover = false
-                    }
-                }
-                #endif
-
-                Spacer(minLength: 0)
-
-                #if os(macOS)
-                UpdateCapsule(coordinator: updateCoordinator)
-                #endif
+        HStack(spacing: 8) {
+            Button(action: showSettings) {
+                Image(systemName: "gearshape")
             }
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 16)
-            // 高度恒定：胶囊的出现/消失与内容变化不得改变侧边栏底部高度
-            .frame(height: 44)
+            .buttonStyle(.borderless)
+            .accessibilityLabel(I18N.localized("设置"))
+            .help(I18N.localized("设置"))
+
+            #if os(macOS)
+            Button {
+                showsFeedbackPopover.toggle()
+            } label: {
+                Image(systemName: "exclamationmark.bubble")
+                    .frame(width: 28, height: 24)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(I18N.shared.localized("反馈与联系", "Feedback & Contact"))
+            .help(I18N.shared.localized("反馈与联系", "Feedback & Contact"))
+            .popover(isPresented: $showsFeedbackPopover, arrowEdge: .bottom) {
+                FeedbackPopoverView(store: store) {
+                    showsFeedbackPopover = false
+                }
+            }
+            #endif
+
+            Spacer(minLength: 0)
+
+            #if os(macOS)
+            UpdateCapsule(coordinator: updateCoordinator)
+            #endif
         }
-        .background(
-            AppearanceHeaderSurface(
-                role: .sidebar,
-                appearance: store.readerAppearance,
-                mode: appearanceMode
-            )
-        )
+        .font(.system(size: 14, weight: .medium))
+        .foregroundStyle(.primary)
+        // 高度恒定：胶囊的出现/消失与内容变化不得改变侧边栏底部高度
+        .frame(height: 44)
+        .paperSidebarBar(store.readerAppearance, mode: appearanceMode, dividerEdge: .top)
     }
     @ViewBuilder
     private var readingSection: some View {
@@ -2492,10 +2471,6 @@ private struct SidebarView: View {
         default:
             break
         }
-    }
-
-    private var appearanceColorScheme: ColorScheme {
-        store.readerAppearance.palette(for: appearanceMode).colorScheme == .dark ? .dark : .light
     }
 
     private var appearanceMutedColor: Color {

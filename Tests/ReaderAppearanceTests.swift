@@ -302,7 +302,13 @@ final class ReaderAppearanceTests: XCTestCase {
             contentsOf: root.appendingPathComponent("PaperRss/Sources/App/RootView.swift"),
             encoding: .utf8
         )
-        XCTAssertTrue(rootView.contains("role: .sidebar"))
+        XCTAssertTrue(rootView.contains(".paperSidebarAppearance(store.readerAppearance, mode: appearanceMode)"))
+        XCTAssertTrue(rootView.contains(".paperSidebarBar(store.readerAppearance, mode: appearanceMode, dividerEdge: .top)"))
+        let paperTheme = try String(
+            contentsOf: root.appendingPathComponent("PaperRss/Sources/App/PaperTheme.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(paperTheme.contains("AppearanceSurface(role: .sidebar"))
         XCTAssertTrue(rootView.contains("role: .articleList"))
         XCTAssertTrue(rootView.contains("appearanceMode:"))
         XCTAssertTrue(rootView.contains("paperAppearancePalette"))
