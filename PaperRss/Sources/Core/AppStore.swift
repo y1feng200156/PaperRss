@@ -3529,6 +3529,33 @@ public final class AppStore: ObservableObject {
         return status.entryID == entry.id && status.kind == kind
     }
 
+    public func askArticle(
+        title: String,
+        text: String,
+        question: String,
+        history: [ArticleChatTurn],
+        onDelta: (@Sendable (String) async -> Void)? = nil
+    ) async throws -> String {
+        guard aiSettings.configuration(for: .articleChat)?.isEnabled == true,
+              let configuration = aiSettings.resolvedConfiguration(for: .articleChat) else {
+            throw LLMServiceError.articleChatUnavailable
+        }
+        let execution = currentAIExecutionContext(for: .articleChat, configuration: configuration)
+        let key = apiKey(for: execution.providerID)
+        guard !key.isEmpty || !execution.providerKind.requiresAPIKey else {
+            throw LLMServiceError.missingAPIKey
+        }
+        do {
+            return try await llm.askArticle(
+                title: title, text: text, question: question, history: history,
+                configuration: configuration, apiKey: key, onDelta: onDelta
+            )
+        } catch let LLMServiceError.httpStatus(code, _) {
+            // Provider error bodies may repeat private prompt data.
+            throw LLMServiceError.httpStatus(code, "")
+        }
+    }
+
     public func generateSummary(
         entry: Entry,
         text: String,

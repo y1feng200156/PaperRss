@@ -36,6 +36,7 @@ public enum AIModelSource: String, Codable, Sendable {
 
 public enum AIFeatureKind: String, Codable, CaseIterable, Sendable {
     case summary
+    case articleChat
     case bilingualTranslation
     /// 中间列文章标题的按需翻译。独立于正文双语翻译，便于给标题指定
     /// 更快/更便宜的翻译模型（列表级请求量远高于正文）。
@@ -626,12 +627,47 @@ public struct AISettings: Codable, Hashable, Sendable {
             : providers.first?.id ?? AIProviderID.deepSeek
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case schema, activeProviderID, providers, features, featureConfigurations, articleChatConfiguration
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try values.decode(Int.self, forKey: .schema)
+        activeProviderID = try values.decode(String.self, forKey: .activeProviderID)
+        providers = try values.decode([AIProviderProfile].self, forKey: .providers)
+        features = try values.decode(AIFeaturePreferences.self, forKey: .features)
+        featureConfigurations = try values.decodeIfPresent(
+            [AIFeatureKind: AIFeatureConfiguration].self, forKey: .featureConfigurations
+        )
+        if let chat = try values.decodeIfPresent(AIFeatureConfiguration.self, forKey: .articleChatConfiguration) {
+            if featureConfigurations == nil { featureConfigurations = [:] }
+            featureConfigurations?[.articleChat] = chat
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(schema, forKey: .schema)
+        try values.encode(activeProviderID, forKey: .activeProviderID)
+        try values.encode(providers, forKey: .providers)
+        try values.encode(features, forKey: .features)
+        // Older versions fail to decode the whole dictionary if it has an unknown feature key.
+        var legacyConfigurations = featureConfigurations
+        let chat = legacyConfigurations?.removeValue(forKey: .articleChat)
+        try values.encodeIfPresent(legacyConfigurations, forKey: .featureConfigurations)
+        try values.encodeIfPresent(chat, forKey: .articleChatConfiguration)
+    }
+
     public func resolvedConfiguration() -> LLMConfiguration {
         resolvedConfiguration(for: .summary) ?? .default
     }
 
     public func configuration(for kind: AIFeatureKind) -> AIFeatureConfiguration? {
         if let configured = featureConfigurations?[kind] { return configured }
+        if kind == .articleChat, let summary = featureConfigurations?[.summary] {
+            return AIFeatureConfiguration(isEnabled: true, model: summary.model, reasoningMode: summary.reasoningMode)
+        }
         guard let provider = activeProvider else { return nil }
         let reference = AIModelReference(providerID: provider.id, modelID: provider.selectedModelID)
         return AIFeatureConfiguration(
@@ -927,6 +963,7 @@ public struct AISettings: Codable, Hashable, Sendable {
     private func legacyEnabledState(for kind: AIFeatureKind) -> Bool {
         switch kind {
         case .summary: features.showsAISummary
+        case .articleChat: true
         case .bilingualTranslation: true
         // 标题翻译是列表级的新数据流（会把标题发送给模型）；老设置缺失该
         // 功能配置时保守地保持关闭，由用户在功能配置中显式打开。
@@ -956,6 +993,11 @@ public struct AISettings: Codable, Hashable, Sendable {
             $0.id == AIProviderID.codexCLI && $0.models.contains { $0.id == AIProviderProfile.codexDefaultModelID }
         }.map { AIModelReference(providerID: $0.id, modelID: AIProviderProfile.codexDefaultModelID) }
         var nextConfigurations = configurations ?? resolvedFeatureConfigurations()
+        if nextConfigurations[.articleChat] == nil, let summary = nextConfigurations[.summary] {
+            nextConfigurations[.articleChat] = AIFeatureConfiguration(
+                isEnabled: true, model: summary.model, reasoningMode: summary.reasoningMode
+            )
+        }
         for kind in AIFeatureKind.allCases {
             var configuration = nextConfigurations[kind]
                 ?? AIFeatureConfiguration(

@@ -25,6 +25,16 @@ extension Color {
             blue: Double(value & 0xFF) / 255
         )
     }
+
+    /// Native reader controls can use the same RGBA values as the WebKit reader.
+    init?(paperRGBA value: String) {
+        guard value.hasPrefix("rgba("), value.hasSuffix(")") else { return nil }
+        let channels = value.dropFirst(5).dropLast().split(separator: ",")
+            .compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard channels.count == 4 else { return nil }
+        self.init(red: channels[0] / 255, green: channels[1] / 255,
+                  blue: channels[2] / 255, opacity: channels[3])
+    }
 }
 
 private struct PaperAppearancePaletteKey: EnvironmentKey {

@@ -252,6 +252,7 @@ struct RootView: View {
     @ObservedObject var attention: MacSystemAttentionController
     @ObservedObject var settingsEditor: AISettingsEditingSession
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #endif
     @State private var selection: SidebarSelection? = .today
     // Keep selection independent from the value-semantic Entry model. Reading an
@@ -291,6 +292,9 @@ struct RootView: View {
     @State private var navigationConfirmation = ReaderNavigationConfirmation()
     @State private var navigationConfirmationExpiryTask: Task<Void, Never>?
     @State private var readerShortcutInvocation: ReaderShortcutInvocation?
+    @State private var articleChat = ArticleChatSession()
+    @State private var articleChatEntryID: String?
+    @State private var articleChatDocument: ReaderAIDocument?
     @StateObject private var columnFocusState = PaperColumnFocusState()
     @Environment(\.colorScheme) private var colorScheme
 
@@ -338,6 +342,8 @@ struct RootView: View {
             .onChange(of: selectedEntryID) { oldID, newID in
                 navigation.didSelectArticle(newID)
                 if oldID != newID {
+                    if let oldID { articleChat.stop(entryID: oldID) }
+                    articleChatEntryID = nil
                     cancelNavigationConfirmation(dismissToast: true)
                 }
                 if let newID { ArticleSwitchTrace.mark("root selection updated", entryID: newID) }
@@ -517,8 +523,8 @@ struct RootView: View {
                 onOpenEntry: { openTimelineArticle() }
             )
                 .ignoresSafeArea(),
-            detail: detailContent
-                .ignoresSafeArea(),
+            detail: macReaderDetail,
+            minimumDetailWidth: activeArticleChatEntry == nil ? 400 : 600,
             toolbarActions: ToolbarActions(
                 onRefresh: { [store] in Task { await store.refresh() } },
                 onAddFeed: { initialFeedDestination = nil; showsAddFeed = true },
@@ -535,6 +541,10 @@ struct RootView: View {
                 onFocusAndScrollArticle: { focusAndScrollArticle() },
                 isZenMode: isZenMode,
                 onToggleZenMode: { withAnimation { isZenMode.toggle() } },
+                onCancelArticleChatReply: {
+                    guard let entry = activeArticleChatEntry else { return false }
+                    return articleChat.stop(entryID: entry.id)
+                },
                 showsReaderCapsule: selectedEntryID != nil && (!isTimelineBrowsing || isZenMode),
                 readerCapsule: AnyView(readerToolbarCapsule),
                 onReaderShortcut: dispatchReaderShortcut,
@@ -598,7 +608,7 @@ struct RootView: View {
                 presentation: timelineMemory
             )
         } detail: {
-            detailContent
+            detailContent()
         }
         .navigationSplitViewStyle(.balanced)
         .tint(appearanceAccentColor)
@@ -1281,7 +1291,7 @@ struct RootView: View {
     }
 
     @ViewBuilder
-    private var detailContent: some View {
+    private func detailContent(drawsBackground: Bool = true) -> some View {
         ZStack(alignment: .bottom) {
             if let selectedEntry {
                 ArticleReaderView(
@@ -1290,6 +1300,7 @@ struct RootView: View {
                     entry: selectedEntry,
                     canAutomaticallyMarkRead: navigation.shouldAutomaticallyMarkRead,
                     appearanceMode: appearanceMode,
+                    drawsBackground: drawsBackground,
                     shortcutInvocation: readerShortcutInvocation,
                     onReaderShortcut: dispatchReaderShortcut,
                     onShortcutFeedback: { showToast($0) },
@@ -1301,7 +1312,11 @@ struct RootView: View {
                     showsMagazineReturn: timelineStyle == .magazine,
                     isReaderCollapsed: timelineStyle != .list && isTimelineBrowsing && !isZenMode,
                     isZenMode: isZenMode,
-                    onToggleZenMode: { withAnimation { isZenMode.toggle() } }
+                    onToggleZenMode: { withAnimation { isZenMode.toggle() } },
+                    onArticleChatDocumentChange: { document in
+                        guard selectedEntryID == selectedEntry.id else { return }
+                        articleChatDocument = document
+                    }
                 )
                 .environment(\.colorScheme, appearanceColorScheme)
                 .ignoresSafeArea()
@@ -1373,6 +1388,15 @@ struct RootView: View {
                 openOriginalKeyHint: readerShortcutKeyLabel(.openOriginal),
                 onOpenOriginal: {
                     openOriginalArticle(current)
+                },
+                showsArticleChat: isArticleChatEnabled,
+                isArticleChatActive: articleChatEntryID == current.id,
+                onToggleArticleChat: {
+                    if articleChatEntryID == current.id {
+                        closeArticleChat()
+                    } else {
+                        articleChatEntryID = current.id
+                    }
                 }
             )
             .environment(\.colorScheme, appearanceColorScheme)
@@ -1380,6 +1404,83 @@ struct RootView: View {
         } else {
             EmptyView()
         }
+    }
+
+    private var isArticleChatEnabled: Bool {
+        store.aiSettings.configuration(for: .articleChat)?.isEnabled == true
+    }
+
+    #if os(macOS)
+    private var macReaderDetail: some View {
+        let chatEntry = activeArticleChatEntry
+        return GeometryReader { geometry in
+            let panelWidth = min(320, geometry.size.width * 0.42)
+            detailContent(drawsBackground: false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+                .padding(.trailing, chatEntry == nil ? 0 : panelWidth)
+                .overlay(alignment: .trailing) {
+                    ArticleChatPresentation(
+                        panel: chatEntry.map { entry in
+                            AnyView(articleChatPanel(for: entry)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
+                                .padding(.bottom, 20))
+                        },
+                        reduceMotion: reduceMotion
+                    )
+                    .frame(width: panelWidth)
+                    .accessibilityHidden(chatEntry == nil)
+                }
+        }
+        .background {
+            AppearanceSurface(role: .reader, appearance: store.readerAppearance, mode: appearanceMode)
+                .ignoresSafeArea()
+        }
+        .environment(\.colorScheme, appearanceColorScheme)
+    }
+
+    private var activeArticleChatEntry: Entry? {
+        guard isArticleChatEnabled, let entry = selectedEntry,
+              entry.id == articleChatEntryID, !isTimelineBrowsing || isZenMode else { return nil }
+        return entry
+    }
+
+    private func articleChatPanel(for entry: Entry) -> some View {
+        let articleText = articleChatDocument?.entryID == entry.id ? articleChatDocument?.text : nil
+        let unavailableMessage: String?
+        if let articleText {
+            unavailableMessage = articleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? I18N.localized("这篇文章暂无可用于对话的正文。", englishFallback: "This article has no text available for chat.")
+                : nil
+        } else {
+            unavailableMessage = I18N.localized("正文就绪后可以提问。", englishFallback: "You can ask a question when the article is ready.")
+        }
+        return ArticleChatPanel(
+            session: articleChat,
+            entryID: entry.id,
+            palette: appearancePalette,
+            unavailableMessage: unavailableMessage,
+            reply: { question, history, onDelta in
+                guard let articleText, selectedEntryID == entry.id else { throw CancellationError() }
+                return try await store.askArticle(
+                    title: entry.title, text: articleText, question: question, history: history, onDelta: onDelta
+                )
+            },
+            onClose: closeArticleChat
+        )
+        .id(entry.id)
+    }
+    #endif
+
+    private func closeArticleChat() {
+        if let articleChatEntryID {
+            articleChat.stop(entryID: articleChatEntryID)
+        }
+        articleChatEntryID = nil
+        #if os(macOS)
+        ThreeColumnSplitViewCoordinator.current?.setActiveColumn(2, autoSelect: false)
+        #endif
     }
 
     private var emptyDetailPlaceholder: some View {

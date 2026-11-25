@@ -139,6 +139,7 @@ struct ArticleReaderView: View {
     // when an agent reopens the same article before an older load task runs.
     var canAutomaticallyMarkRead: (String) -> Bool = { _ in true }
     var appearanceMode: ReaderAppearanceMode?
+    var drawsBackground = true
     var shortcutInvocation: ReaderShortcutInvocation?
     var onReaderShortcut: (ReaderShortcutAction) -> Void = { _ in }
     var onShortcutFeedback: (String) -> Void = { _ in }
@@ -149,6 +150,7 @@ struct ArticleReaderView: View {
     var isReaderCollapsed = false
     var isZenMode: Bool = false
     var onToggleZenMode: () -> Void = {}
+    var onArticleChatDocumentChange: (ReaderAIDocument?) -> Void = { _ in }
     @State private var translationDocumentReady = false
     @State private var preparedArticle: PreparedArticle?
     @State private var displayedEntry: Entry?
@@ -332,7 +334,7 @@ struct ArticleReaderView: View {
         }
     }
 
-    var body: some View {
+    private var readingSurface: some View {
         ZStack(alignment: .top) {
             if hasReaderContent {
                 readerBody
@@ -371,13 +373,15 @@ struct ArticleReaderView: View {
                 .padding(16)
             }
         }
+    }
+
+    var body: some View {
+        readingSurface
         .background {
-            AppearanceSurface(
-                role: .reader,
-                appearance: store.readerAppearance,
-                mode: readerAppearanceMode
-            )
-                .ignoresSafeArea()
+            if drawsBackground {
+                AppearanceSurface(role: .reader, appearance: store.readerAppearance, mode: readerAppearanceMode)
+                    .ignoresSafeArea()
+            }
         }
         #if os(iOS)
         .navigationTitle(entry.title)
@@ -455,6 +459,9 @@ struct ArticleReaderView: View {
             ArticleSwitchTrace.mark("reader task", entryID: entry.id)
             let wasWaitingForDocument = isLoading && activeLoadEntryID != nil
             translationDocumentReady = false
+            #if os(macOS)
+            onArticleChatDocumentChange(nil)
+            #endif
             store.dismissError()
             let requestedEntry = entry
             articleLoadSession += 1
@@ -523,6 +530,9 @@ struct ArticleReaderView: View {
             preparedArticle = prepared
             contentUpgrade.setNeedsRefresh(needsBackgroundRefresh)
             translationDocumentReady = true
+            #if os(macOS)
+            onArticleChatDocumentChange(ReaderAIDocument(entryID: requestedEntry.id, text: effectiveArticleText))
+            #endif
             if store.llmConfiguration.showsAISummary,
                store.llmConfiguration.automaticallyGenerateSummary,
                store.artifact(for: requestedEntry, kind: .summary) == nil,
@@ -7913,10 +7923,15 @@ struct ReaderCapsuleToolbar: View {
     var canOpenOriginal: Bool = false
     var openOriginalKeyHint: String = ""
     var onOpenOriginal: () -> Void = {}
+    var showsArticleChat = false
+    var isArticleChatActive = false
+    var onToggleArticleChat: () -> Void = {}
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.paperAppearancePalette) private var appearancePalette
     @Environment(\.readerCapsuleMaterialHostedByAppKit) private var materialHostedByAppKit
+
+    private var accent: Color { Color(paperHex: appearancePalette.accentHex) }
 
     var body: some View {
         #if os(macOS)
@@ -7947,6 +7962,17 @@ struct ReaderCapsuleToolbar: View {
             .buttonStyle(.plain)
             .disabled(disabled)
             .accessibilityLabel("\(I18N.localized(isBilingualActive ? "关闭逐段翻译" : "开启逐段翻译")) (C)")
+
+            if showsArticleChat {
+                Button(action: onToggleArticleChat) {
+                    toolbarSymbol("bubble.left.and.bubble.right", isActive: isArticleChatActive)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(I18N.localized("文章对话", englishFallback: "Article Chat"))
+                .accessibilityAddTraits(isArticleChatActive ? .isSelected : [])
+                .help(I18N.localized("文章对话", englishFallback: "Article Chat"))
+                .accessibilityIdentifier("reader.articleChat.toggle")
+            }
 
             Button(action: onToggleRead) {
                 toolbarSymbol(isRead ? "envelope.open" : "envelope", isActive: false)
@@ -8010,19 +8036,19 @@ struct ReaderCapsuleToolbar: View {
         }
         .offset(y: 0.6)
         .symbolRenderingMode(.monochrome)
-        .foregroundStyle(isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary))
+        .foregroundStyle(isActive ? AnyShapeStyle(accent) : AnyShapeStyle(.primary))
         .frame(width: 28, height: 26)
-        .background(isActive ? AnyShapeStyle(Color.accentColor.opacity(0.18)) : AnyShapeStyle(.clear), in: Circle())
+        .background(isActive ? AnyShapeStyle(accent.opacity(0.18)) : AnyShapeStyle(.clear), in: Circle())
         .contentShape(Circle())
     }
 
     private func toolbarSymbol(_ name: String, isActive: Bool, pointSize: CGFloat = Self.symbolPointSize) -> some View {
         Image(systemName: name)
             .symbolRenderingMode(.monochrome)
-            .foregroundStyle(isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary))
+            .foregroundStyle(isActive ? AnyShapeStyle(accent) : AnyShapeStyle(.primary))
             .font(.system(size: pointSize, weight: .medium))
             .frame(width: 28, height: 26)
-            .background(isActive ? AnyShapeStyle(Color.accentColor.opacity(0.18)) : AnyShapeStyle(.clear), in: Circle())
+            .background(isActive ? AnyShapeStyle(accent.opacity(0.18)) : AnyShapeStyle(.clear), in: Circle())
             .contentShape(Circle())
     }
 }

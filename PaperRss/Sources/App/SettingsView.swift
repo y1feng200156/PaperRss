@@ -1437,6 +1437,9 @@ struct SettingsView: View {
                 aiFeatureSection(I18N.shared.localized("文章能力", "Article Features")) {
                     LazyVGrid(columns: aiFeatureColumns, alignment: .leading, spacing: 16) {
                         featureConfigurationRow(.summary)
+                        #if os(macOS)
+                        featureConfigurationRow(.articleChat)
+                        #endif
                         featureConfigurationRow(.bilingualTranslation)
                         featureConfigurationRow(.titleTranslation)
                     }
@@ -1784,6 +1787,7 @@ struct SettingsView: View {
     private func featureIconName(_ kind: AIFeatureKind) -> String {
         switch kind {
         case .summary: "doc.text"
+        case .articleChat: "bubble.left.and.bubble.right"
         case .bilingualTranslation: "character.bubble"
         case .titleTranslation: "text.bubble"
         case .selectionTranslation: "text.magnifyingglass"
@@ -1836,6 +1840,7 @@ struct SettingsView: View {
     private func featureTitle(_ kind: AIFeatureKind) -> String {
         switch kind {
         case .summary: I18N.shared.localized("文章摘要", "Article Summary")
+        case .articleChat: I18N.localized("文章对话", englishFallback: "Article Chat")
         case .bilingualTranslation: I18N.shared.localized("双语翻译", "Bilingual Translation")
         case .titleTranslation: I18N.shared.localized("标题翻译", "Title Translation")
         case .selectionTranslation: I18N.shared.localized("划词翻译", "Selection Translation")
@@ -1847,6 +1852,7 @@ struct SettingsView: View {
     private func featureDescription(_ kind: AIFeatureKind) -> String {
         switch kind {
         case .summary: I18N.shared.localized("为当前文章生成可长期保留的摘要。", "Generate a durable summary for the article.")
+        case .articleChat: I18N.localized("围绕当前文章连续提问。", englishFallback: "Ask follow-up questions about the current article.")
         case .bilingualTranslation: I18N.shared.localized("按可见段落生成原文与译文对照。", "Translate visible paragraphs alongside the original.")
         case .titleTranslation: I18N.shared.localized("在中间列按需翻译可见标题与摘要，悬停或选中可查看原文。", "Translate visible timeline titles and summaries on demand; hover or select to see the original.")
         case .selectionTranslation: I18N.shared.localized("翻译阅读器中选中的文字。", "Translate selected text in the reader.")

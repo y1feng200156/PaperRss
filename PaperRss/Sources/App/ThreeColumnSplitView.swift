@@ -70,6 +70,7 @@ struct ToolbarActions {
     let onFocusAndScrollArticle: () -> Void
     let isZenMode: Bool
     let onToggleZenMode: () -> Void
+    let onCancelArticleChatReply: () -> Bool
     let showsReaderCapsule: Bool
     let readerCapsule: AnyView
     let onReaderShortcut: (ReaderShortcutAction) -> Void
@@ -104,6 +105,7 @@ struct ToolbarActions {
         onFocusAndScrollArticle: @escaping () -> Void = {},
         isZenMode: Bool = false,
         onToggleZenMode: @escaping () -> Void = {},
+        onCancelArticleChatReply: @escaping () -> Bool = { false },
         showsReaderCapsule: Bool = false,
         readerCapsule: AnyView = AnyView(EmptyView()),
         onReaderShortcut: @escaping (ReaderShortcutAction) -> Void = { _ in },
@@ -134,6 +136,7 @@ struct ToolbarActions {
         self.onFocusAndScrollArticle = onFocusAndScrollArticle
         self.isZenMode = isZenMode
         self.onToggleZenMode = onToggleZenMode
+        self.onCancelArticleChatReply = onCancelArticleChatReply
         self.showsReaderCapsule = showsReaderCapsule
         self.readerCapsule = readerCapsule
         self.onReaderShortcut = onReaderShortcut
@@ -167,6 +170,7 @@ struct ThreeColumnSplitView<Sidebar: View, Content: View, Detail: View>: NSViewC
     let sidebar: Sidebar
     let content: Content
     let detail: Detail
+    var minimumDetailWidth: CGFloat = 400
     let toolbarActions: ToolbarActions
     let appearance: ReaderAppearance
     let appearanceMode: ReaderAppearanceMode
@@ -221,7 +225,7 @@ struct ThreeColumnSplitView<Sidebar: View, Content: View, Detail: View>: NSViewC
         detailHost.view.layer?.masksToBounds = true
         let detailItem = NSSplitViewItem(viewController: detailHost)
         detailItem.allowsFullHeightLayout = true
-        detailItem.minimumThickness = 400
+        detailItem.minimumThickness = minimumDetailWidth
         detailItem.canCollapse = true
 
         splitVC.addSplitViewItem(sidebarItem)
@@ -276,7 +280,11 @@ struct ThreeColumnSplitView<Sidebar: View, Content: View, Detail: View>: NSViewC
         if let host = splitVC.splitViewItems[1].viewController as? PaperColumnContainerController<Content> {
             host.rootView = content
         }
-        if let host = splitVC.splitViewItems[2].viewController as? NSHostingController<Detail> {
+        let detailItem = splitVC.splitViewItems[2]
+        if detailItem.minimumThickness != minimumDetailWidth {
+            detailItem.minimumThickness = minimumDetailWidth
+        }
+        if let host = detailItem.viewController as? NSHostingController<Detail> {
             host.rootView = detail
         }
 
@@ -733,14 +741,22 @@ final class ThreeColumnSplitViewCoordinator: NSObject, NSToolbarDelegate {
                 }
 
 
-                // ESC 键 (keyCode 53)：处于禅模式时按下 ESC 键退出禅模式
-                if event.keyCode == 53 && flags.isEmpty {
-                    if MainActor.assumeIsolated({ self.actions.isZenMode }) {
-                        MainActor.assumeIsolated {
-                            self.actions.onToggleZenMode()
+                // Esc 优先停止当前对话的回复，其次退出禅模式。
+                if event.keyCode == 53, flags.intersection([.shift, .control, .option, .command]).isEmpty,
+                   !event.isARepeat {
+                    let handled = MainActor.assumeIsolated { () -> Bool in
+                        if event.window?.attachedSheet == nil, NSApp.modalWindow == nil,
+                           (event.window?.firstResponder as? any NSTextInputClient)?.hasMarkedText() != true,
+                           self.actions.onCancelArticleChatReply() {
+                            return true
                         }
-                        return nil
+                        if self.actions.isZenMode {
+                            self.actions.onToggleZenMode()
+                            return true
+                        }
+                        return false
                     }
+                    if handled { return nil }
                 }
                 if flags.contains(.command) && !flags.contains(.control) && !flags.contains(.option) {
                     let chars = event.charactersIgnoringModifiers ?? ""

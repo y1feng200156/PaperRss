@@ -1,6 +1,116 @@
 {
   "sourceLanguage" : "zh-Hans",
   "strings" : {
+  "文章对话" : {
+    "localizations" : {
+      "en" : {
+        "stringUnit" : {
+          "state" : "translated",
+          "value" : "Article Chat"
+        }
+      }
+    }
+  },
+  "围绕当前文章连续提问。" : {
+    "localizations" : {
+      "en" : {
+        "stringUnit" : {
+          "state" : "translated",
+          "value" : "Ask follow-up questions about the current article."
+        }
+      }
+    }
+  },
+  "请在 AI 设置中为文章对话选择可用的模型。" : {
+    "localizations" : {
+      "en" : {
+        "stringUnit" : {
+          "state" : "translated",
+          "value" : "Select an available model for Article Chat in AI settings."
+        }
+      }
+    }
+  },
+  "请将问题缩短到 4,000 个字符以内。" : {
+    "localizations" : {
+      "en" : {
+        "stringUnit" : {
+          "state" : "translated",
+          "value" : "Shorten your question to 4,000 characters or fewer."
+        }
+      }
+    }
+  },
+  "关闭文章对话" : {
+    "localizations" : {
+      "en" : {
+        "stringUnit" : {
+          "state" : "translated",
+          "value" : "Close Article Chat"
+        }
+      }
+    }
+  },
+  "发送提问时，正文和近期对话会提供给所选模型。" : {
+    "localizations" : {
+      "en" : {
+        "stringUnit" : {
+          "state" : "translated",
+          "value" : "Sending a question shares the article and recent conversation with the selected model."
+        }
+      }
+    }
+  },
+  "正在回答" : {
+    "localizations" : {
+      "en" : {
+        "stringUnit" : {
+          "state" : "translated",
+          "value" : "Generating an answer"
+        }
+      }
+    }
+  },
+  "问一个关于这篇文章的问题" : {
+    "localizations" : {
+      "en" : {
+        "stringUnit" : {
+          "state" : "translated",
+          "value" : "Ask about this article"
+        }
+      }
+    }
+  },
+  "停止回答" : {
+    "localizations" : {
+      "en" : {
+        "stringUnit" : {
+          "state" : "translated",
+          "value" : "Stop Reply"
+        }
+      }
+    }
+  },
+  "正文就绪后可以提问。" : {
+    "localizations" : {
+      "en" : {
+        "stringUnit" : {
+          "state" : "translated",
+          "value" : "You can ask a question when the article is ready."
+        }
+      }
+    }
+  },
+  "这篇文章暂无可用于对话的正文。" : {
+    "localizations" : {
+      "en" : {
+        "stringUnit" : {
+          "state" : "translated",
+          "value" : "This article has no text available for chat."
+        }
+      }
+    }
+  },
   "关键词静音": {
     "localizations": {
       "en": {
