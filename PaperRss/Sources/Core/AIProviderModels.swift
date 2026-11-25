@@ -6,6 +6,7 @@ public enum AIProviderID {
     public static let openAI = "builtin.openai"
     public static let deepSeek = "builtin.deepseek"
     public static let gemini = "builtin.gemini"
+    public static let codexCLI = "builtin.codex-cli"
     public static let migratedLegacy = "migrated.legacy"
 }
 
@@ -13,13 +14,18 @@ public enum AIProviderKind: String, Codable, CaseIterable, Sendable {
     case openAICompatible
     case deepSeek
     case gemini
+    case codexCLI
     case customOpenAICompatible
 
     public var isBuiltIn: Bool {
         switch self {
         case .customOpenAICompatible: false
-        case .openAICompatible, .deepSeek, .gemini: true
+        case .openAICompatible, .deepSeek, .gemini, .codexCLI: true
         }
+    }
+
+    var requiresAPIKey: Bool {
+        self != .customOpenAICompatible && self != .codexCLI
     }
 }
 
@@ -231,6 +237,8 @@ public struct AIFeaturePreferences: Codable, Hashable, Sendable {
 }
 
 public struct AIProviderProfile: Codable, Hashable, Identifiable, Sendable {
+    public static let codexDefaultModelID = "codex-default"
+
     public let id: String
     public var kind: AIProviderKind
     public var isEnabled: Bool
@@ -334,7 +342,7 @@ public struct AIProviderProfile: Codable, Hashable, Identifiable, Sendable {
             showsSelectionTranslation: features.showsSelectionTranslation,
             customPrompt: features.customPrompt,
             providerKind: kind,
-            adaptation: models.first(where: { $0.id == modelID })?.adaptation ?? .automatic
+            adaptation: kind == .codexCLI ? .chat : models.first(where: { $0.id == modelID })?.adaptation ?? .automatic
         )
         runtime.reasoningProtocol = models.first(where: { $0.id == modelID })?.reasoningProtocol ?? .automatic
         runtime.reasoningMetadata = models.first(where: { $0.id == modelID })?.reasoningMetadata
@@ -401,6 +409,16 @@ public struct AIProviderProfile: Codable, Hashable, Identifiable, Sendable {
         return replacing(models: Self.normalizedModels(next, retaining: selectedModelID))
     }
 
+    public func updatingModel(_ model: AIModelOption) -> AIProviderProfile {
+        var next = models
+        if let index = next.firstIndex(where: { $0.id == model.id }) {
+            next[index] = model
+        } else {
+            next.append(model)
+        }
+        return replacing(models: next)
+    }
+
     public func selectingModel(_ modelID: String) -> AIProviderProfile {
         let cleanID = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanID.isEmpty else { return self }
@@ -408,6 +426,10 @@ public struct AIProviderProfile: Codable, Hashable, Identifiable, Sendable {
     }
 
     public func validateConnection(requireModel: Bool) throws {
+        if kind == .codexCLI {
+            if requireModel && selectedModelID.isEmpty { throw AIProviderValidationError.missingModel }
+            return
+        }
         let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let components = URLComponents(string: trimmed),
               let scheme = components.scheme?.lowercased(),
@@ -523,6 +545,24 @@ public struct AISettings: Codable, Hashable, Sendable {
         providers.first(where: { $0.id == activeProviderID })
     }
 
+    private static var localProviders: [AIProviderProfile] {
+        #if os(macOS)
+        [
+            AIProviderProfile(
+                id: AIProviderID.codexCLI,
+                kind: .codexCLI,
+                name: "Codex CLI",
+                description: "用已登录的 Codex CLI 处理所选 AI 功能的输入。",
+                baseURL: "",
+                selectedModelID: AIProviderProfile.codexDefaultModelID,
+                models: [AIModelOption(id: AIProviderProfile.codexDefaultModelID, displayName: "Codex Default", adaptation: .chat)]
+            )
+        ]
+        #else
+        []
+        #endif
+    }
+
     public static let `default` = AISettings(
         activeProviderID: AIProviderID.deepSeek,
         providers: [
@@ -557,7 +597,7 @@ public struct AISettings: Codable, Hashable, Sendable {
                 baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
                 selectedModelID: "gemini-3.8-flash"
             )
-        ],
+        ] + localProviders,
         features: .default,
         featureConfigurations: Dictionary(uniqueKeysWithValues: AIFeatureKind.allCases.map {
             ($0, AIFeatureConfiguration(
@@ -693,6 +733,7 @@ public struct AISettings: Codable, Hashable, Sendable {
 
     public func deletingModel(providerID: String, modelID: String) -> AISettings {
         guard var provider = provider(id: providerID) else { return self }
+        if provider.kind == .codexCLI && modelID == AIProviderProfile.codexDefaultModelID { return self }
         provider.models.removeAll { $0.id == modelID }
         if provider.selectedModelID == modelID {
             provider.selectedModelID = provider.models.first?.id ?? ""
@@ -758,6 +799,15 @@ public struct AISettings: Codable, Hashable, Sendable {
         for canonical in defaults {
             guard let existing = provider(id: canonical.id) else {
                 result.append(canonical)
+                continue
+            }
+            if canonical.kind == .codexCLI {
+                let defaultID = AIProviderProfile.codexDefaultModelID
+                let models = canonical.models + existing.models.filter { $0.id != defaultID }.map { model in
+                    AIModelOption(id: model.id, displayName: model.displayName, source: model.source, adaptation: .chat)
+                }
+                let selectedID = models.contains { $0.id == existing.selectedModelID } ? existing.selectedModelID : defaultID
+                result.append(canonical.replacing(isEnabled: existing.isEnabled, selectedModelID: selectedID, models: models))
                 continue
             }
             let oldBase = existing.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -898,10 +948,13 @@ public struct AISettings: Codable, Hashable, Sendable {
         featureConfigurations configurations: [AIFeatureKind: AIFeatureConfiguration]?
     ) -> AISettings {
         let fallback = nextProviders.lazy.compactMap { provider -> AIModelReference? in
-            guard provider.isEnabled else { return nil }
+            guard provider.isEnabled, provider.kind != .codexCLI else { return nil }
             guard let modelID = provider.models.first?.id else { return nil }
             return AIModelReference(providerID: provider.id, modelID: modelID)
         }.first
+        let codexDefault = nextProviders.first {
+            $0.id == AIProviderID.codexCLI && $0.models.contains { $0.id == AIProviderProfile.codexDefaultModelID }
+        }.map { AIModelReference(providerID: $0.id, modelID: AIProviderProfile.codexDefaultModelID) }
         var nextConfigurations = configurations ?? resolvedFeatureConfigurations()
         for kind in AIFeatureKind.allCases {
             var configuration = nextConfigurations[kind]
@@ -917,8 +970,8 @@ public struct AISettings: Codable, Hashable, Sendable {
                 }
             } ?? false
             if !isValid {
-                configuration.model = fallback
-                if fallback == nil { configuration.isEnabled = false }
+                configuration.model = configuration.model?.providerID == AIProviderID.codexCLI ? codexDefault ?? fallback : fallback
+                if configuration.model == nil { configuration.isEnabled = false }
             }
             nextConfigurations[kind] = configuration
         }

@@ -91,6 +91,7 @@ private func providerSymbolName(_ kind: AIProviderKind) -> String {
     case .deepSeek: "AIProviderDeepSeek"
     case .gemini: "AIProviderGemini"
     case .openAICompatible: "AIProviderOpenAI"
+    case .codexCLI: "terminal"
     case .customOpenAICompatible: "server.rack"
     }
 }
@@ -140,7 +141,7 @@ private struct AIProviderIcon: View {
         switch kind {
         case .deepSeek: Color(red: 0.30, green: 0.42, blue: 0.99)
         case .gemini: .primary
-        case .openAICompatible: .primary
+        case .openAICompatible, .codexCLI: .primary
         case .customOpenAICompatible: customColor
         }
     }
@@ -149,7 +150,7 @@ private struct AIProviderIcon: View {
         ZStack {
             Circle().fill(Color.primary.opacity(0.055))
             Circle().stroke(Color.primary.opacity(0.12), lineWidth: 0.8)
-            if kind == .customOpenAICompatible {
+            if kind == .customOpenAICompatible || kind == .codexCLI {
                 Image(systemName: providerSymbolName(kind))
                     .font(.system(size: size * 0.48, weight: .semibold))
                     .foregroundStyle(color)
@@ -254,6 +255,10 @@ struct SettingsView: View {
     @State private var manualModelID = ""
     @State private var isShowingAddModelsSheet = false
     @State private var fetchedModelCandidates: [AIModelOption] = []
+    @State private var codexCatalog: [AIModelOption]?
+    @State private var codexCatalogError: String?
+    @State private var isLoadingCodexCatalog = false
+    @State private var codexCatalogRefresh = 0
     @State private var selectedCandidateModelIDs = Set<String>()
     @State private var modelCandidateSearchText = ""
     @State private var providerPendingDeletion: AIProviderProfile?
@@ -1496,6 +1501,9 @@ struct SettingsView: View {
                 #endif
             }
         }
+        .task(id: store.aiProvider(id: AIProviderID.codexCLI)?.isEnabled == true ? codexCatalogRefresh : nil) {
+            await loadCodexCatalog()
+        }
     }
 
     private var providerPickerAndEditor: some View {
@@ -1604,8 +1612,10 @@ struct SettingsView: View {
             HStack(spacing: 10) {
                 featureModelMenu(kind, configuration: configuration)
                     .frame(maxWidth: .infinity)
-                featureReasoningMenu(kind, configuration: configuration)
-                    .frame(width: 112)
+                if configuration.model.flatMap({ store.aiProvider(id: $0.providerID)?.kind }) != .codexCLI {
+                    featureReasoningMenu(kind, configuration: configuration)
+                        .frame(width: 112)
+                }
             }
             if let reference = configuration.model,
                let model = store.aiSettings.provider(id: reference.providerID)?.models.first(where: { $0.id == reference.modelID }),
@@ -1632,25 +1642,33 @@ struct SettingsView: View {
         Menu {
             ForEach(store.aiSettings.providers.filter(\.isEnabled)) { provider in
                 Menu {
-                    ForEach(provider.models) { model in
+                    ForEach(featureModels(for: provider)) { model in
+                        let label = modelLabel(model, providerKind: provider.kind)
                         Button {
-                            store.saveAISettings(store.aiSettings.updatingFeature(
-                                kind,
-                                configuration: AIFeatureConfiguration(
-                                    isEnabled: configuration.isEnabled,
-                                    model: AIModelReference(providerID: provider.id, modelID: model.id),
-                                    reasoningMode: configuration.reasoningMode
-                                )
-                            ))
+                            selectFeatureModel(model, provider: provider, kind: kind, configuration: configuration)
                         } label: {
                             if configuration.model == AIModelReference(providerID: provider.id, modelID: model.id) {
-                                Label(model.displayName + (model.adaptationBadge.map { " · " + $0 } ?? ""), systemImage: "checkmark")
+                                Label(label, systemImage: "checkmark")
                             } else {
-                                Text(model.displayName + (model.adaptationBadge.map { " · " + $0 } ?? ""))
+                                Text(label)
                             }
                         }
                         .disabled(!model.supports(kind))
                         .help(model.supports(kind) ? "" : LLMServiceError.translationOnly.localizedDescription)
+                    }
+                    if provider.kind == .codexCLI {
+                        Divider()
+                        if isLoadingCodexCatalog {
+                            Text(I18N.shared.localized("正在读取 Codex 模型…", "Loading Codex models…"))
+                        } else if let codexCatalogError {
+                            Text(codexCatalogError)
+                        } else if codexCatalog?.isEmpty == true {
+                            Text(I18N.shared.localized("当前 Codex 账号未返回可用的文本模型。", "The current Codex account returned no text models."))
+                        }
+                        Button(I18N.shared.localized("刷新 Codex 模型", "Refresh Codex Models")) {
+                            codexCatalogRefresh += 1
+                        }
+                        .disabled(isLoadingCodexCatalog)
                     }
                 } label: {
                     HStack(spacing: 6) {
@@ -1676,6 +1694,44 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .disabled(!configuration.isEnabled || availableModelReferences.isEmpty)
+    }
+
+    private func featureModels(for provider: AIProviderProfile) -> [AIModelOption] {
+        guard provider.kind == .codexCLI, let codexCatalog else { return provider.models }
+        return provider.models.filter { $0.id == AIProviderProfile.codexDefaultModelID } + codexCatalog
+    }
+
+    private func selectFeatureModel(
+        _ model: AIModelOption, provider: AIProviderProfile, kind: AIFeatureKind, configuration: AIFeatureConfiguration
+    ) {
+        var settings = store.aiSettings
+        if provider.kind == .codexCLI, model.source == .remote {
+            settings = settings.updatingProvider(provider.updatingModel(model))
+            editor.mergeSavedModel(model, for: provider.id)
+        }
+        var next = configuration
+        next.model = AIModelReference(providerID: provider.id, modelID: model.id)
+        store.saveAISettings(settings.updatingFeature(kind, configuration: next))
+    }
+
+    private func loadCodexCatalog() async {
+        guard let provider = store.aiProvider(id: AIProviderID.codexCLI), provider.isEnabled else { return }
+        let refresh = codexCatalogRefresh
+        codexCatalog = nil
+        codexCatalogError = nil
+        isLoadingCodexCatalog = true
+        defer {
+            if !Task.isCancelled && refresh == codexCatalogRefresh { isLoadingCodexCatalog = false }
+        }
+        do {
+            let models = try await store.fetchAIModels(provider: provider, apiKey: "")
+            try Task.checkCancellation()
+            guard refresh == codexCatalogRefresh else { return }
+            codexCatalog = models
+        } catch {
+            guard !Task.isCancelled, refresh == codexCatalogRefresh else { return }
+            codexCatalogError = error.localizedDescription
+        }
     }
 
     private func featureReasoningMenu(
@@ -1749,7 +1805,14 @@ struct SettingsView: View {
         guard provider.isEnabled else {
             return I18N.shared.localized("供应商已停用", "Provider disabled")
         }
-        return "\(localizedBuiltInProviderName(provider.name)) / \(model.displayName)" + (model.adaptationBadge.map { " · " + $0 } ?? "")
+        return "\(localizedBuiltInProviderName(provider.name)) / \(modelLabel(model, providerKind: provider.kind))"
+    }
+
+    private func modelLabel(_ model: AIModelOption, providerKind: AIProviderKind?) -> String {
+        if providerKind == .codexCLI, model.id == AIProviderProfile.codexDefaultModelID {
+            return I18N.shared.localized("默认模型", "Default Model")
+        }
+        return model.displayName + (model.adaptationBadge.map { " · " + $0 } ?? "")
     }
 
     private func localizedReasoningMode(_ mode: String) -> String {
@@ -2200,32 +2263,41 @@ struct SettingsView: View {
                     }
                 }
 
-                providerEditorRow("API Key") {
-                    HStack(spacing: 8) {
-                        Group {
-                            if showsAPIKey {
-                                TextField(I18N.shared.localized("局域网模型可留空", "Optional for local models"), text: apiKeyBinding)
-                            } else {
-                                SecureField(I18N.shared.localized("局域网模型可留空", "Optional for local models"), text: apiKeyBinding)
+                if selectedAIProvider?.kind == .codexCLI {
+                    Text(I18N.shared.localized(
+                        "PaperRss 会读取已登录 Codex 账号的模型，可在「功能配置」里为摘要和翻译分别选择。",
+                        "PaperRss loads models from the signed-in Codex account. Choose a model for each feature in Feature Routing."
+                    ))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                } else {
+                    providerEditorRow("API Key") {
+                        HStack(spacing: 8) {
+                            Group {
+                                if showsAPIKey {
+                                    TextField(I18N.shared.localized("局域网模型可留空", "Optional for local models"), text: apiKeyBinding)
+                                } else {
+                                    SecureField(I18N.shared.localized("局域网模型可留空", "Optional for local models"), text: apiKeyBinding)
+                                }
                             }
-                        }
-                        .textFieldStyle(SettingsInputStyle())
-
-                        Button { showsAPIKey.toggle() } label: {
-                            Image(systemName: showsAPIKey ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel(I18N.shared.localized(showsAPIKey ? "隐藏密钥" : "显示密钥", showsAPIKey ? "Hide key" : "Show key"))
-                    }
-                }
-
-                providerEditorRow("Base URL") {
-                    if selectedAIProvider?.isBuiltIn == true {
-                        providerReadOnlyValue(configuration.baseURL)
-                            .textSelection(.enabled)
-                    } else {
-                        TextField(I18N.shared.localized("供应商 API 根地址", "Provider API root URL"), text: configurationBinding.baseURL)
                             .textFieldStyle(SettingsInputStyle())
+
+                            Button { showsAPIKey.toggle() } label: {
+                                Image(systemName: showsAPIKey ? "eye.slash" : "eye")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel(I18N.shared.localized(showsAPIKey ? "隐藏密钥" : "显示密钥", showsAPIKey ? "Hide key" : "Show key"))
+                        }
+                    }
+
+                    providerEditorRow("Base URL") {
+                        if selectedAIProvider?.isBuiltIn == true {
+                            providerReadOnlyValue(configuration.baseURL)
+                                .textSelection(.enabled)
+                        } else {
+                            TextField(I18N.shared.localized("供应商 API 根地址", "Provider API root URL"), text: configurationBinding.baseURL)
+                                .textFieldStyle(SettingsInputStyle())
+                        }
                     }
                 }
             }
@@ -2310,7 +2382,8 @@ struct SettingsView: View {
     }
 
     private var providerModelManagementSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let kind = selectedAIProvider?.kind
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(I18N.shared.localized("模型管理", "Models"))
@@ -2344,19 +2417,21 @@ struct SettingsView: View {
                             .frame(width: 36, height: 36)
 
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(model.displayName)
+                                Text(modelLabel(model, providerKind: kind))
                                     .font(.system(size: 13, weight: .semibold))
                                     .lineLimit(1)
-                                Text(model.source == .manual
-                                    ? I18N.shared.localized("手动添加", "Manually added")
-                                    : I18N.shared.localized("供应商目录", "Provider catalog"))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                if kind != .codexCLI || model.id != AIProviderProfile.codexDefaultModelID {
+                                    Text(model.source == .manual
+                                        ? I18N.shared.localized("手动添加", "Manually added")
+                                        : I18N.shared.localized("供应商目录", "Provider catalog"))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
 
                             Spacer()
 
-                            if let badge = model.adaptationBadge {
+                            if kind != .codexCLI, let badge = model.adaptationBadge {
                                 Text(badge).font(.caption).foregroundStyle(.secondary)
                             }
                             if configuration.model == model.id {
@@ -2369,40 +2444,44 @@ struct SettingsView: View {
                             }
 
                             Menu {
-                                Menu(I18N.shared.localized("模型适配：", "Model adapter: ") + model.adaptation.title) {
-                                    Text(I18N.shared.localized("控制发给模型的消息格式", "Controls the message format sent to the model"))
-                                    ForEach(AIModelAdaptation.allCases, id: \.self) { adaptation in
-                                        Button((model.adaptation == adaptation ? "✓ " : "　") + adaptation.title) {
-                                            setModelAdaptation(adaptation, modelID: model.id)
-                                        }
-                                    }
-                                    Divider()
-                                    Text(modelAdaptationExplanation(model))
-                                }
-                                Menu(I18N.shared.localized("思考协议：", "Reasoning protocol: ") + reasoningProtocolTitle(model.reasoningProtocol)) {
-                                    Text(I18N.shared.localized("控制思考开关与等级参数的发送方式", "Controls how thinking switches and effort levels are sent"))
-                                    ForEach(AIReasoningProtocol.allCases, id: \.self) { wire in
-                                        Button((model.reasoningProtocol == wire ? "✓ " : "　") + reasoningProtocolTitle(wire)) {
-                                            editor.edit(selectedProviderID) { draft in
-                                                guard let index = draft.provider.models.firstIndex(where: { $0.id == model.id }) else { return }
-                                                draft.provider.models[index].reasoningProtocol = wire
-                                                draft.provider.models[index].reasoningMetadata = nil
+                                if kind != .codexCLI {
+                                    Menu(I18N.shared.localized("模型适配：", "Model adapter: ") + model.adaptation.title) {
+                                        Text(I18N.shared.localized("控制发给模型的消息格式", "Controls the message format sent to the model"))
+                                        ForEach(AIModelAdaptation.allCases, id: \.self) { adaptation in
+                                            Button((model.adaptation == adaptation ? "✓ " : "　") + adaptation.title) {
+                                                setModelAdaptation(adaptation, modelID: model.id)
                                             }
                                         }
+                                        Divider()
+                                        Text(modelAdaptationExplanation(model))
                                     }
-                                    Divider()
-                                    if model.usesTranslationAdaptation {
-                                        Text(I18N.shared.localized("翻译适配不发送思考参数", "Translation adapters do not send reasoning parameters"))
-                                    } else {
-                                        let wire = draftAIProvider?.runtimeConfiguration(modelID: model.id, features: store.aiSettings.features).reasoningCapabilities.wireProtocol ?? .automatic
-                                        Text(I18N.shared.localized("当前识别：", "Currently resolved: ") + (wire == .automatic
-                                            ? I18N.shared.localized("未确认，使用服务默认", "Unknown; use server defaults")
-                                            : reasoningProtocolTitle(wire)))
+                                    Menu(I18N.shared.localized("思考协议：", "Reasoning protocol: ") + reasoningProtocolTitle(model.reasoningProtocol)) {
+                                        Text(I18N.shared.localized("控制思考开关与等级参数的发送方式", "Controls how thinking switches and effort levels are sent"))
+                                        ForEach(AIReasoningProtocol.allCases, id: \.self) { wire in
+                                            Button((model.reasoningProtocol == wire ? "✓ " : "　") + reasoningProtocolTitle(wire)) {
+                                                editor.edit(selectedProviderID) { draft in
+                                                    guard let index = draft.provider.models.firstIndex(where: { $0.id == model.id }) else { return }
+                                                    draft.provider.models[index].reasoningProtocol = wire
+                                                    draft.provider.models[index].reasoningMetadata = nil
+                                                }
+                                            }
+                                        }
+                                        Divider()
+                                        if model.usesTranslationAdaptation {
+                                            Text(I18N.shared.localized("翻译适配不发送思考参数", "Translation adapters do not send reasoning parameters"))
+                                        } else {
+                                            let wire = draftAIProvider?.runtimeConfiguration(modelID: model.id, features: store.aiSettings.features).reasoningCapabilities.wireProtocol ?? .automatic
+                                            Text(I18N.shared.localized("当前识别：", "Currently resolved: ") + (wire == .automatic
+                                                ? I18N.shared.localized("未确认，使用服务默认", "Unknown; use server defaults")
+                                                : reasoningProtocolTitle(wire)))
+                                        }
                                     }
                                 }
                                 Button(I18N.shared.localized("测试模型", "Test Model")) { test(modelID: model.id) }
-                                Button(I18N.shared.localized("删除模型", "Remove Model"), role: .destructive) {
-                                    providerModelPendingDeletion = model
+                                if kind != .codexCLI || model.id != AIProviderProfile.codexDefaultModelID {
+                                    Button(I18N.shared.localized("删除模型", "Remove Model"), role: .destructive) {
+                                        providerModelPendingDeletion = model
+                                    }
                                 }
                             } label: {
                                 Image(systemName: "ellipsis")
@@ -3485,6 +3564,8 @@ struct SettingsView: View {
             I18N.shared.localized("DeepSeek OpenAI 兼容接口", "DeepSeek OpenAI-Compatible Endpoint")
         case "Google Gemini 官方 OpenAI 兼容接口":
             I18N.shared.localized("Google Gemini 官方 OpenAI 兼容接口", "Google Gemini official OpenAI-compatible endpoint")
+        case "用已登录的 Codex CLI 处理所选 AI 功能的输入。":
+            I18N.shared.localized("用已登录的 Codex CLI 处理所选 AI 功能的输入。", "Use your signed-in Codex CLI to process input for the AI features you select.")
         default:
             value
         }
@@ -3677,10 +3758,12 @@ struct SettingsView: View {
                 let models = try await store.fetchAIModels(provider: provider, apiKey: requestedAPIKey)
                 guard modelFetchRequestID == requestID, selectedProviderID == providerID, editor.accepts(requestID, for: providerID, revision: revision) else { return }
                 fetchedModelCandidates = models
-                editor.edit(providerID) { draft in
-                    for index in draft.provider.models.indices {
-                        if let fetched = models.first(where: { $0.id == draft.provider.models[index].id }) {
-                            draft.provider.models[index].reasoningMetadata = fetched.reasoningMetadata
+                if provider.kind != .codexCLI {
+                    editor.edit(providerID) { draft in
+                        for index in draft.provider.models.indices {
+                            if let fetched = models.first(where: { $0.id == draft.provider.models[index].id }) {
+                                draft.provider.models[index].reasoningMetadata = fetched.reasoningMetadata
+                            }
                         }
                     }
                 }

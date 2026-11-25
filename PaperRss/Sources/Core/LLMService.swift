@@ -113,15 +113,18 @@ public enum LLMServiceError: LocalizedError, Sendable {
 public struct LLMService: Sendable {
     private let port: any AIModelPort
     private let translationScheduler: TranslationRequestScheduler
+    private let codexCLI: CodexCLI
 
     public init(port: any AIModelPort = URLSessionAIModelAdapter()) {
         self.port = port
         self.translationScheduler = TranslationRequestScheduler()
+        self.codexCLI = CodexCLI()
     }
 
-    init(port: any AIModelPort, translationScheduler: TranslationRequestScheduler) {
+    init(port: any AIModelPort, translationScheduler: TranslationRequestScheduler, codexCLI: CodexCLI = CodexCLI()) {
         self.port = port
         self.translationScheduler = translationScheduler
+        self.codexCLI = codexCLI
     }
 
     public func test(configuration: LLMConfiguration, apiKey: String) async throws {
@@ -140,6 +143,9 @@ public struct LLMService: Sendable {
     }
 
     public func fetchModelOptions(configuration: LLMConfiguration, apiKey: String) async throws -> [AIModelOption] {
+        if configuration.providerKind == .codexCLI {
+            return try await codexCLI.fetchModelOptions()
+        }
         let request = try makeModelsRequest(configuration: configuration, apiKey: apiKey)
         let response = try await port.data(for: request)
         try validate(statusCode: response.statusCode, data: response.data)
@@ -178,6 +184,12 @@ public struct LLMService: Sendable {
         forceDisableReasoning: Bool = false,
         overrideTemperature: Double? = nil
     ) async throws -> String {
+        if configuration.providerKind == .codexCLI {
+            let text = try await codexCLI.complete(prompt: prompt, system: system, model: configuration.model)
+            try Task.checkCancellation()
+            if let onDelta { await onDelta(text) }
+            return text
+        }
         guard !configuration.usesTranslationAdaptation else { throw LLMServiceError.translationOnly }
         let urlRequest = try makeRequest(
             prompt: prompt,

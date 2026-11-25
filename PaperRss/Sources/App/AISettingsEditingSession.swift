@@ -49,6 +49,15 @@ final class AISettingsEditingSession: ObservableObject {
         if newProviderID == id { newProviderID = nil }
     }
 
+    func mergeSavedModel(_ model: AIModelOption, for id: String) {
+        guard var draft = drafts[id], let original = draft.original else { return }
+        draft.original = original.updatingModel(model)
+        draft.provider = draft.provider.updatingModel(model)
+        draft.revision += 1
+        cancelOperations(for: id)
+        drafts[id] = draft
+    }
+
     func discard(_ id: String) {
         cancelOperations(for: id)
         drafts.removeValue(forKey: id)

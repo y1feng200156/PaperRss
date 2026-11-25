@@ -256,7 +256,7 @@ public final class AppStore: ObservableObject {
         if exempt { return .exempt }
         if translationFeedLists[entry.feedID] == .blacklist { return .blacklisted }
         guard let execution = executionSnapshot(for: .bilingualTranslation),
-              !execution.1.isEmpty || !providerRequiresAPIKey(execution.0.providerKind) else { return .unavailable }
+              !execution.1.isEmpty || !execution.0.providerKind.requiresAPIKey else { return .unavailable }
         return nil
     }
 
@@ -3489,10 +3489,6 @@ public final class AppStore: ObservableObject {
             .fingerprint(for: kind, promptVersion: artifactPromptVersion(for: kind))
     }
 
-    private func providerRequiresAPIKey(_ kind: AIProviderKind) -> Bool {
-        kind != .customOpenAICompatible
-    }
-
     public func artifact(for entry: Entry, kind: AIArtifactKind) -> AIArtifact? {
         try? localProvider.fetchArtifact(
             entryID: entry.id,
@@ -3549,7 +3545,7 @@ public final class AppStore: ObservableObject {
         lastError = nil
         let requestID = UUID()
         activeSummaryRequest = AIRequestStatus(requestID: requestID, entryID: entry.id, kind: .summary, phase: .loadingLocalConfiguration)
-        guard !apiKey.isEmpty || !providerRequiresAPIKey(execution.providerKind) else {
+        guard !apiKey.isEmpty || !execution.providerKind.requiresAPIKey else {
             if activeSummaryRequest?.requestID == requestID { activeSummaryRequest = nil }
             let error = LLMServiceError.missingAPIKey
             reportError(error, module: .ai)
@@ -3892,7 +3888,7 @@ public final class AppStore: ObservableObject {
         guard isRequestCurrent(), !Task.isCancelled else { return }
 
         // 4. 检查 API Key
-        guard !apiKey.isEmpty || !providerRequiresAPIKey(execution.providerKind) else {
+        guard !apiKey.isEmpty || !execution.providerKind.requiresAPIKey else {
             let error = LLMServiceError.missingAPIKey
             reportError(error, module: .ai)
             // 未配置 API Key 属于可预期的环境状态，且翻译随滚动批量触发，
@@ -4029,7 +4025,7 @@ public final class AppStore: ObservableObject {
         )
 
         // 未配置 API Key 属于可预期的环境状态：不计失败，等配置完成后重试。
-        guard !apiKey.isEmpty || !providerRequiresAPIKey(execution.providerKind) else {
+        guard !apiKey.isEmpty || !execution.providerKind.requiresAPIKey else {
             emitTransientNotice(LLMServiceError.missingAPIKey.localizedDescription)
             return .empty
         }
@@ -4190,7 +4186,7 @@ public final class AppStore: ObservableObject {
         lastError = nil
         let requestID = UUID()
         activeSelectionRequest = AIRequestStatus(requestID: requestID, entryID: entry.id, kind: kind, phase: .loadingLocalConfiguration)
-        guard !apiKey.isEmpty || !providerRequiresAPIKey(execution.providerKind) else {
+        guard !apiKey.isEmpty || !execution.providerKind.requiresAPIKey else {
             if activeSelectionRequest?.requestID == requestID { activeSelectionRequest = nil }
             let error = LLMServiceError.missingAPIKey
             reportError(error, module: .ai)
@@ -4374,7 +4370,7 @@ public final class AppStore: ObservableObject {
     }
 
     public func apiKey(for providerID: String) -> String {
-        LocalAPIKeyStore.loadAPIKey(for: providerID)
+        providerID == AIProviderID.codexCLI ? "" : LocalAPIKeyStore.loadAPIKey(for: providerID)
     }
 
     public func activeAPIKey() -> String {
@@ -4395,7 +4391,7 @@ public final class AppStore: ObservableObject {
         if let summaryConfiguration = normalized.resolvedConfiguration(for: .summary) {
             llmConfiguration = summaryConfiguration
             if let summaryProviderID = normalized.configuration(for: .summary)?.model?.providerID,
-               !LocalAPIKeyStore.loadAPIKey(for: summaryProviderID).isEmpty {
+               !apiKey(for: summaryProviderID).isEmpty {
                 persistLegacyCompatibilityPairIfPossible(
                     configuration: summaryConfiguration,
                     providerID: summaryProviderID
@@ -4406,7 +4402,7 @@ public final class AppStore: ObservableObject {
 
     public func saveAIProvider(_ provider: AIProviderProfile, apiKey: String? = nil) {
         var updated = provider
-        if let apiKey, apiKey != self.apiKey(for: provider.id) {
+        if provider.kind != .codexCLI, let apiKey, apiKey != self.apiKey(for: provider.id) {
             updated.models = updated.models.map { model in
                 var next = model
                 next.reasoningMetadata = nil
@@ -4414,7 +4410,7 @@ public final class AppStore: ObservableObject {
             }
         }
         let settings = aiSettings.updatingProvider(updated)
-        if let apiKey {
+        if provider.kind != .codexCLI, let apiKey {
             _ = saveAIProviderKey(apiKey, for: provider.id)
         }
         saveAISettings(settings)
@@ -4510,7 +4506,7 @@ public final class AppStore: ObservableObject {
         providerID: String
     ) {
         guard shouldPersistAISettings else { return }
-        let key = LocalAPIKeyStore.loadAPIKey(for: providerID)
+        let key = apiKey(for: providerID)
         guard !key.isEmpty,
               let data = try? JSONEncoder().encode(configuration) else { return }
         // The old configuration and key form one rollback snapshot. Never
@@ -4624,11 +4620,12 @@ public final class AppStore: ObservableObject {
 
     public func fetchAIModels(provider: AIProviderProfile, apiKey: String) async throws -> [AIModelOption] {
         try provider.validateConnection(requireModel: false)
-        if provider.kind != .customOpenAICompatible && apiKey.isEmpty {
+        if provider.kind.requiresAPIKey && apiKey.isEmpty {
             throw LLMServiceError.missingAPIKey
         }
         let configuration = provider.runtimeConfiguration(features: aiSettings.features)
         let remote = try await llm.fetchModelOptions(configuration: configuration, apiKey: apiKey)
+        if provider.kind == .codexCLI { return remote }
         return provider.updatingModels(from: remote.map(\.id)).models.map { model in
             var next = model
             if let fetched = remote.first(where: { $0.id == model.id }) { next.reasoningMetadata = fetched.reasoningMetadata }
@@ -4653,13 +4650,13 @@ public final class AppStore: ObservableObject {
 
     public func probeAIProvider(provider: AIProviderProfile, apiKey: String) async throws -> AIConnectionTestResult {
         try provider.validateConnection(requireModel: true)
-        if provider.kind != .customOpenAICompatible && apiKey.isEmpty { throw LLMServiceError.missingAPIKey }
+        if provider.kind.requiresAPIKey && apiKey.isEmpty { throw LLMServiceError.missingAPIKey }
         return try await llm.probeConnection(configuration: provider.runtimeConfiguration(features: aiSettings.features), apiKey: apiKey)
     }
 
     public func testAIProvider(provider: AIProviderProfile, apiKey: String) async throws {
         try provider.validateConnection(requireModel: true)
-        if provider.kind != .customOpenAICompatible && apiKey.isEmpty {
+        if provider.kind.requiresAPIKey && apiKey.isEmpty {
             throw LLMServiceError.missingAPIKey
         }
         try await testLLM(

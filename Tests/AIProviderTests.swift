@@ -922,12 +922,120 @@ final class AIProviderTests: XCTestCase {
         let settings = AISettings.default
 
         XCTAssertEqual(settings.activeProviderID, AIProviderID.deepSeek)
-        XCTAssertEqual(settings.providers.map(\.id), [AIProviderID.deepSeek, AIProviderID.openAI, AIProviderID.gemini])
+        XCTAssertEqual(settings.providers.map(\.id), [AIProviderID.deepSeek, AIProviderID.openAI, AIProviderID.gemini, AIProviderID.codexCLI])
         let gemini = settings.provider(id: AIProviderID.gemini)
         XCTAssertEqual(gemini?.kind, .gemini)
         XCTAssertEqual(gemini?.baseURL, "https://generativelanguage.googleapis.com/v1beta/openai")
         XCTAssertEqual(gemini?.selectedModelID, "gemini-3.8-flash")
         XCTAssertEqual(settings.schema, 5)
+    }
+
+    func testAddingCodexCLIToExistingSettingsPreservesFeatureRouting() throws {
+        let saved = AISettings.default
+        var olderSettings = saved
+        olderSettings.providers.removeAll { $0.id == AIProviderID.codexCLI }
+        let migrated = olderSettings.migratedToCurrentSchema()
+        XCTAssertEqual(migrated.featureConfigurations, saved.featureConfigurations)
+
+        let provider = try XCTUnwrap(migrated.provider(id: AIProviderID.codexCLI))
+            .addingManualModel(id: "fixture-codex-model")
+            .selectingModel("fixture-codex-model")
+        XCTAssertNoThrow(try provider.validateConnection(requireModel: true))
+        XCTAssertFalse(provider.kind.requiresAPIKey)
+        let codexModel = AIModelReference(providerID: provider.id, modelID: provider.selectedModelID)
+        let selected = migrated.updatingProvider(provider)
+            .updatingFeature(.summary, configuration: .init(isEnabled: true, model: codexModel))
+        let roundTripped = try JSONDecoder().decode(AISettings.self, from: JSONEncoder().encode(selected))
+            .migratedToCurrentSchema()
+        XCTAssertEqual(roundTripped.resolvedConfiguration(for: .summary)?.providerKind, .codexCLI)
+        XCTAssertEqual(roundTripped.resolvedConfiguration(for: .summary)?.model, "fixture-codex-model")
+        XCTAssertEqual(roundTripped.configuration(for: .bilingualTranslation), saved.configuration(for: .bilingualTranslation))
+        let defaultModel = try XCTUnwrap(provider.models.first { $0.id == AIProviderProfile.codexDefaultModelID })
+        let removed = roundTripped.updatingProvider(provider.replacing(selectedModelID: defaultModel.id, models: [defaultModel]))
+        XCTAssertEqual(removed.resolvedConfiguration(for: .summary)?.model, AIProviderProfile.codexDefaultModelID)
+    }
+
+    func testCodexCLIUsesStdinForSummaryAndBatchTranslationWithoutAPIKey() async throws {
+        let files = FileManager.default
+        let directory = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try files.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? files.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("codex")
+        try #"""
+        #!/bin/sh
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --output-last-message) output="$2"; shift ;;
+                --model=*) model="${1#--model=}" ;;
+            esac
+            shift
+        done
+        request=$(/bin/cat)
+        printf '%s\n' 'CLI stdout is not the final message.'
+        if [ -n "$OPENAI_API_KEY" ]; then exit 1; fi
+        case "$request" in
+            *'Summarize the article'*'A test article'*)
+                [ "$model" = "fixture-codex-model" ] || exit 1
+                printf '%s' '测试摘要' > "$output" ;;
+            *'Translate every string'*'First paragraph'*'Second paragraph'*)
+                [ -z "$model" ] || exit 1
+                printf '%s' '["第一段","第二段"]' > "$output" ;;
+            *) exit 1 ;;
+        esac
+        """#.write(to: executable, atomically: true, encoding: .utf8)
+        try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let service = LLMService(
+            port: FixedAIModelPort(response: AIModelHTTPResponse(statusCode: 500, data: Data())),
+            translationScheduler: TranslationRequestScheduler(),
+            codexCLI: CodexCLI(environment: ["HOME": directory.path, "PATH": directory.path, "OPENAI_API_KEY": "fixture-key"])
+        )
+        let provider = try XCTUnwrap(AISettings.default.provider(id: AIProviderID.codexCLI))
+        let config = provider.runtimeConfiguration(features: .default)
+        let deltas = DeltaCollector()
+        let summaryConfig = provider.runtimeConfiguration(modelID: "fixture-codex-model", features: .default)
+        let summary = try await service.summary(text: "A test article.", configuration: summaryConfig, apiKey: "") {
+            deltas.append($0)
+        }
+        XCTAssertEqual(summary, "测试摘要")
+        XCTAssertEqual(deltas.value, summary)
+        let translation = try await service.translateBatch(paragraphs: ["First paragraph.", "Second paragraph."], configuration: config, apiKey: "")
+        XCTAssertEqual(translation, ["第一段", "第二段"])
+    }
+
+    func testCodexModelCatalogReadsVisibleTextModelsAcrossPages() async throws {
+        let files = FileManager.default
+        let directory = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try files.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? files.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("codex")
+        try #"""
+        #!/bin/sh
+        [ "$1" = "app-server" ] || exit 1
+        while IFS= read -r line; do
+            case "$line" in
+                *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+                *'"method":"initialized"'*) ;;
+                *'"method":"account/read"'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt"}}}' ;;
+                *'"cursor":"second-page"'*)
+                    printf '%s\n' '{"id":4,"result":{"data":[{"model":"fixture-first"},{"model":"fixture-second","displayName":"Second model","inputModalities":["text","image"]}]}}' ;;
+                *'"method":"model/list"'*)
+                    printf '%s\n' '{"method":"account/updated","params":{}}'
+                    printf '%s\n' '{"id":3,"result":{"data":[{"model":"fixture-first","displayName":"First model"},{"model":"hidden","hidden":true},{"model":"image-only","inputModalities":["image"]}],"nextCursor":"second-page"}}' ;;
+                *) exit 1 ;;
+            esac
+        done
+        """#.write(to: executable, atomically: true, encoding: .utf8)
+        try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let service = LLMService(
+            port: FixedAIModelPort(response: AIModelHTTPResponse(statusCode: 500, data: Data())),
+            translationScheduler: TranslationRequestScheduler(),
+            codexCLI: CodexCLI(environment: ["HOME": directory.path, "PATH": directory.path], timeout: .seconds(5))
+        )
+        let provider = try XCTUnwrap(AISettings.default.provider(id: AIProviderID.codexCLI))
+        let models = try await service.fetchModelOptions(configuration: provider.runtimeConfiguration(features: .default), apiKey: "")
+        XCTAssertEqual(models.map(\.id), ["fixture-first", "fixture-second"])
+        XCTAssertEqual(models.map(\.displayName), ["First model", "Second model"])
+        XCTAssertTrue(models.allSatisfy { $0.source == .remote && $0.supports(.summary) })
     }
 
     func testExecutionFingerprintChangesForEveryOutputRelevantSetting() {
